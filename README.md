@@ -1,64 +1,71 @@
-# cosi-driver-ceph
+# s3gw-cosi-driver
 
-Sample Driver that provides reference implementation for Container Object Storage Interface (COSI) API for [Ceph Object Store aka RADOS Gateway (RGW)](https://docs.ceph.com/en/latest/man/8/radosgw/)
+COSI driver implementation for [s3gw](https://github.com/aquarist-labs/s3gw).
 
-## Installing CRDs, COSI controller, Node adapter
+## Installing CRDs and the COSI controller
+
+```shell
+kubectl create -k github.com/kubernetes-sigs/container-object-storage-interface-api
+kubectl create -k github.com/kubernetes-sigs/container-object-storage-interface-controller
 ```
-$ kubectl create -k github.com/kubernetes-sigs/container-object-storage-interface-api
 
-$ kubectl create -k github.com/kubernetes-sigs/container-object-storage-interface-controller
-```
+Check for the controller pod in the default namespace:
 
-Following pods will running in the default namespace :
-```
+```shell
 NAME                                        READY   STATUS    RESTARTS   AGE
 objectstorage-controller-6fc5f89444-4ws72   1/1     Running   0          2d6h
 ```
 
+## Building
 
-## Building, Installing, Setting Up
-Code can be compiled using:
+the driver's code can be compiled using:
+
+```shell
+make build
 ```
-$ make build
-```
-Now build docker image and provide tag as `ceph/ceph-cosi-driver:latest`
-```
+
+Now build the docker image and provide a tag as `ghcr.io/giubacc/s3gw-cosi-driver:latest`
+
+```shell
 $ make container
 Sending build context to Docker daemon  41.95MB
-Step 1/5 : FROM gcr.io/distroless/static:latest
- ---> 1d9948f921db
-Step 2/5 : LABEL maintainers="Ceph COSI Authors"
- ---> Using cache
- ---> 8659e9813ec5
-Step 3/5 : LABEL description="Ceph COSI driver"
- ---> Using cache
- ---> 0c55b21ff64f
-Step 4/5 : COPY ./cmd/ceph-cosi-driver/ceph-cosi-driver ceph-cosi-driver
- ---> a21275402998
-Step 5/5 : ENTRYPOINT ["/ceph-cosi-driver"]
- ---> Running in 620bfa992683
-Removing intermediate container 620bfa992683
- ---> 09575229056e
-Successfully built 09575229056e
+```
 
-docker tag ceph-cosi-driver:latest ceph/ceph-cosi-driver:latest
+You can tag and push the docker image to a registry with:
+
+```shell
+docker tag s3gw-cosi-driver:latest ghcr.io/giubacc/s3gw-cosi-driver:latest
+docker push ghcr.io/giubacc/s3gw-cosi-driver:latest
 ```
-Now start the sidecar and cosi driver with:
+
+## Installing with Helm
+
+Now install the sidecar and the s3gw's COSI driver with:
+
+```shell
+helm install s3gw-cosi charts/s3gw-cosi
 ```
-$ kubectl apply -k .
-$ kubectl -n ceph-cosi-driver get pods
+
+Check the driver pod:
+
+```shell
+$ kubectl -n s3gw-cosi-driver get pods
+
 NAME                                         READY   STATUS    RESTARTS   AGE
 objectstorage-provisioner-6c8df56cc6-lqr26   2/2     Running   0          26h
 ```
 
-## Create Bucket Requests, Bucket Access Request and consuming it in App
+## Create BucketClaim, BucketAccess and consuming the claim in a pod
+
+```shell
+kubectl apply -f examples/bucketclass.yaml
+kubectl apply -f examples/bucketclaim.yaml
+kubectl apply -f examples/bucketaccessclass.yaml
+kubectl apply -f examples/bucketaccess.yaml
 ```
-$ kubectl create -f examples/bucketclass.yaml
-$ kubectl create -f examples/bucketclaim.yaml
-$ kubectl create -f examples/bucketaccessclass.yaml
-$ kubectl create -f examples/bucketaccess.yaml
-```
-In the app, `bucketaccessrequest(bar)` can be consumed as volume mount:
+
+In a pod definition, the bucket claim can be consumed as volume mount:
+
 ```yaml
 spec:
   containers:
@@ -66,23 +73,33 @@ spec:
         - name: cosi-secrets
           mountPath: /data/cosi
   volumes:
-  - name: cosi-secrets
-    secret:
-      secretName: ba-secret
+    - name: cosi-secrets
+      secret:
+        secretName: ba-secret
 ```
-An example for awscli pods can be found at `examples/awscliapppod.yaml`
 
-## Known limitations
-1. Handle access policies for Bucket Access Request
-2. Increase unit tests coverage and CI job for integration tests
+In the container, at the path: `/data/cosi`, you will find a
+file named: `BucketInfo` containing a json:
 
-## Community, discussion, contribution, and support
-
-You can reach the maintainers of this project at:
-
-- [Slack](https://kubernetes.slack.com/messages/sig-storage)
-- [Mailing List](https://groups.google.com/forum/#!forum/kubernetes-sig-storage)
-
-## Code of conduct
-
-Participation in the Kubernetes community is governed by the [Kubernetes Code of Conduct](code-of-conduct.md).
+```json
+{
+  "metadata": {
+    "name": "bc-ceb3a749-b578-4da7-8ea3-607c40093060",
+    "creationTimestamp": null
+  },
+  "spec": {
+    "bucketName": "sample-bccf98111be-2edb-402e-a95e-628e178f2818",
+    "authenticationType": "KEY",
+    "secretS3": {
+      "endpoint": "http://s3gw.s3gw.svc.cluster.local",
+      "region": "US",
+      "accessKeyID": "N7DFI9CCZWZ6QJXI5V1O",
+      "accessSecretKey": "2RjtQa3JqPQKVQPf2ux4v8xtdszL8bNtsfna8vV0"
+    },
+    "secretAzure": null,
+    "protocols": [
+      "s3"
+    ]
+  }
+}
+```

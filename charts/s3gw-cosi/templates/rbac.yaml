@@ -1,0 +1,60 @@
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: objectstorage-provisioner-role
+  labels:
+{{ include "s3gw-cosi.labels" . | indent 4 }}
+rules:
+- apiGroups: ["objectstorage.k8s.io"]
+  resources:
+    - "buckets"
+    - "bucketaccesses"
+    - "bucketclaims"
+    - "bucketaccessclasses"
+    - "buckets/status"
+    - "bucketaccesses/status"
+    - "bucketclaims/status"
+    - "bucketaccessclasses/status"
+  verbs:
+    - "get"
+    - "list"
+    - "watch"
+    - "update"
+    - "create"
+    - "delete"
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs:
+    - "get"
+    - "watch"
+    - "list"
+    - "delete"
+    - "update"
+    - "create"
+- apiGroups: [""]
+  resources:
+    - "secrets"
+    - "events"
+  verbs:
+    - "get"
+    - "delete"
+    - "update"
+    - "create"
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: objectstorage-provisioner-role-binding
+  labels:
+{{ include "s3gw-cosi.labels" . | indent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: objectstorage-provisioner-sa
+# It must be set to default.
+# see https://github.com/kubernetes-sigs/kustomize/issues/1377#issuecomment-694731163
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: objectstorage-provisioner-role
+  apiGroup: rbac.authorization.k8s.io

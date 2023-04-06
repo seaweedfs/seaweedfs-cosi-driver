@@ -1,5 +1,5 @@
 /*
-Copyright 2021 The Ceph-COSI Authors.
+Copyright 2023 SUSE, LLC.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 You may not use this file except in compliance with the License.
@@ -42,14 +42,14 @@ func TestIdentityServer_DriverGetInfo(t *testing.T) {
 		{
 			name: "Test DriverGetInfo",
 			fields: fields{
-				provisioner: "ceph-cosi-driver",
+				provisioner: "s3gw-cosi-driver",
 			},
 			args: args{
 				ctx: context.Background(),
 				req: &cosi.DriverGetInfoRequest{},
 			},
 			want: &cosi.DriverGetInfoResponse{
-				Name: "ceph-cosi-driver",
+				Name: "s3gw-cosi-driver",
 			},
 			wantErr: false,
 		},

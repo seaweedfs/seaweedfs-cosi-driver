@@ -1,0 +1,33 @@
+---
+apiVersion: v2
+name: s3gw-cosi
+version: 0.0.1
+kubeVersion: ">=1.14"
+description: |
+  COSI driver implementation for s3gw.
+type: application
+icon: |-
+  https://raw.githubusercontent.com/aquarist-labs/aquarium-website/gh-pages/images/logo-xl.png
+keywords:
+  - storage
+  - s3
+  - cosi
+home: https://github.com/aquarist-labs/s3gw
+sources:
+  - https://github.com/aquarist-labs/s3gw-charts
+  - https://github.com/aquarist-labs/s3gw
+  - https://github.com/aquarist-labs/ceph
+maintainers:
+  - name: s3gw maintainers
+    email: s3gw@suse.com
+    url: https://github.com/orgs/aquarist-labs/projects/5
+appVersion: "latest"
+deprecated: false
+annotations:
+  artifacthub.io/category: storage
+  artifacthub.io/links: |
+    - name: homepage
+      url: https://s3gw.io/
+    - name: support
+      url: https://github.com/aquarist-labs/s3gw/issues
+  app.aquarist-labs.io/name: s3gw-cosi

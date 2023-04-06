@@ -1,6 +1,6 @@
 FROM gcr.io/distroless/static:latest
-LABEL maintainers="Ceph COSI Authors"
-LABEL description="Ceph COSI driver"
+LABEL maintainers="s3gw maintainers"
+LABEL description="s3gw COSI driver"
 
-COPY ./bin/ceph-cosi-driver ceph-cosi-driver
-ENTRYPOINT ["/ceph-cosi-driver"]
+COPY ./bin/s3gw-cosi-driver s3gw-cosi-driver
+ENTRYPOINT ["/s3gw-cosi-driver"]

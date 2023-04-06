@@ -1,0 +1,22 @@
+---
+name: Lint
+on:
+  pull_request:
+    branches:
+      - s3gw
+  push:
+    branches:
+      - s3gw
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Set up Git repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v3
+
+      - name: Pre-Commit Checks
+        uses: pre-commit/action@v3.0.0

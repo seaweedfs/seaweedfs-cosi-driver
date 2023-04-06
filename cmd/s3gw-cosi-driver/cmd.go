@@ -1,5 +1,5 @@
 /*
-Copyright 2021 The Ceph-COSI Authors.
+Copyright 2023 SUSE, LLC.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 You may not use this file except in compliance with the License.
@@ -19,9 +19,9 @@ package main
 import (
 	"context"
 	"flag"
+	"s3gw-cosi-driver/pkg/driver"
 	"strings"
 
-	"github.com/ceph/cosi-driver-ceph/pkg/driver"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/container-object-storage-interface-provisioner-sidecar/pkg/provisioner"
 )
 
-const provisionerName = "ceph.objectstorage.k8s.io"
+const provisionerName = "s3gw.objectstorage.k8s.io"
 
 var (
 	driverAddress = "unix:///var/lib/cosi/cosi.sock"
@@ -40,8 +40,8 @@ var (
 )
 
 var cmd = &cobra.Command{
-	Use:           "ceph-cosi-driver",
-	Short:         "Kubernetes COSI driver for Ceph RGW",
+	Use:           "s3gw-cosi-driver",
+	Short:         "Kubernetes COSI driver for s3gw",
 	SilenceErrors: true,
 	SilenceUsage:  true,
 	RunE: func(cmd *cobra.Command, args []string) error {

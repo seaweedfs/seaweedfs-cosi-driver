@@ -1,5 +1,6 @@
 /*
-Copyright 2021 The Ceph-COSI Authors.
+Copyright 2023 SUSE, LLC.
+
 Licensed under the Apache License, Version 2.0 (the "License");
 You may not use this file except in compliance with the License.
 You may obtain a copy of the License at
@@ -18,10 +19,10 @@ package driver
 import (
 	"context"
 	"errors"
+	"s3gw-cosi-driver/pkg/util/s3client"
 
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/ceph/cosi-driver-ceph/pkg/util/s3client"
 	rgwadmin "github.com/ceph/go-ceph/rgw/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -40,7 +41,7 @@ type provisionerServer struct {
 
 var _ cosispec.ProvisionerServer = &provisionerServer{}
 
-func NewProvisionerServer(provisioner , rgwEndpoint, accessKey, secretKey string) (cosispec.ProvisionerServer, error) {
+func NewProvisionerServer(provisioner, rgwEndpoint, accessKey, secretKey string) (cosispec.ProvisionerServer, error) {
 	// TODO : use different user this operation
 	s3Client, err := s3client.NewS3Agent(accessKey, secretKey, rgwEndpoint, true)
 	if err != nil {
@@ -62,9 +63,10 @@ func NewProvisionerServer(provisioner , rgwEndpoint, accessKey, secretKey string
 // It is expected to create the same bucket given a bucketName and protocol
 // If the bucket already exists, then it MUST return codes.AlreadyExists
 // Return values
-//    nil -                   Bucket successfully created
-//    codes.AlreadyExists -   Bucket already exists. No more retries
-//    non-nil err -           Internal error                                [requeue'd with exponential backoff]
+//
+//	nil -                   Bucket successfully created
+//	codes.AlreadyExists -   Bucket already exists. No more retries
+//	non-nil err -           Internal error                                [requeue'd with exponential backoff]
 func (s *provisionerServer) DriverCreateBucket(ctx context.Context,
 	req *cosispec.DriverCreateBucketRequest) (*cosispec.DriverCreateBucketResponse, error) {
 	klog.InfoS("Using ceph rgw to create Backend Bucket")
