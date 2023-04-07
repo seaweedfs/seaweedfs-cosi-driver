@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: objectstorage-provisioner
+  name: s3gw-objectstorage-provisioner
   labels:
 {{ include "s3gw-cosi.labels" . | indent 4 }}
 spec:
@@ -19,7 +19,7 @@ spec:
       labels:
 {{ include "s3gw-cosi.selectorLabels" . | indent 8 }}
     spec:
-      serviceAccountName: objectstorage-provisioner-sa
+      serviceAccountName: s3gw-objectstorage-provisioner-sa
       volumes:
         - name: socket
           emptyDir: {}
@@ -29,18 +29,18 @@ spec:
           imagePullPolicy: {{ default "IfNotPresent" .Values.driver.imagePullPolicy }}
           envFrom:
             - secretRef:
-                name: objectstorage-provisioner
+                name: s3gw-objectstorage-provisioner
           volumeMounts:
             - mountPath: /var/lib/cosi
               name: socket
-        - name: objectstorage-provisioner-sidecar
+        - name: s3gw-objectstorage-provisioner-sidecar
           image: {{ include "s3gw-cosi.sidecarImage" . | quote }}
           imagePullPolicy: {{ default "IfNotPresent" .Values.sidecar.imagePullPolicy }}
           args:
             - {{ printf "--v=%s" (default "1" .Values.sidecar.logLevel) }}
           envFrom:
             - secretRef:
-                name: objectstorage-provisioner
+                name: s3gw-objectstorage-provisioner
           env:
             - name: POD_NAMESPACE
               valueFrom:

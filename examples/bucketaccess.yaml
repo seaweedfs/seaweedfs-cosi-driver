@@ -1,6 +1,7 @@
 apiVersion: objectstorage.k8s.io/v1alpha1
 kind: BucketAccess
 metadata:
+  namespace: sample-ns
   name: sample-bac-ba
 spec:
   bucketAccessClassName: sample-bac

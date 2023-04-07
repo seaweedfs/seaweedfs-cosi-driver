@@ -2,7 +2,7 @@
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
-  name: objectstorage-provisioner-role
+  name: s3gw-objectstorage-provisioner-role
   labels:
 {{ include "s3gw-cosi.labels" . | indent 4 }}
 rules:
@@ -45,16 +45,16 @@ rules:
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
-  name: objectstorage-provisioner-role-binding
+  name: s3gw-objectstorage-provisioner-role-binding
   labels:
 {{ include "s3gw-cosi.labels" . | indent 4 }}
 subjects:
   - kind: ServiceAccount
-    name: objectstorage-provisioner-sa
+    name: s3gw-objectstorage-provisioner-sa
 # It must be set to default.
 # see https://github.com/kubernetes-sigs/kustomize/issues/1377#issuecomment-694731163
     namespace: default
 roleRef:
   kind: ClusterRole
-  name: objectstorage-provisioner-role
+  name: s3gw-objectstorage-provisioner-role
   apiGroup: rbac.authorization.k8s.io

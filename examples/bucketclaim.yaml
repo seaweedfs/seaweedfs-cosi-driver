@@ -1,6 +1,7 @@
 apiVersion: objectstorage.k8s.io/v1alpha1
 kind: BucketClaim
 metadata:
+  namespace: sample-ns
   name: sample-bc
 spec:
   bucketClassName: sample-bcc

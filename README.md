@@ -51,8 +51,8 @@ Check the driver pod:
 ```shell
 $ kubectl -n s3gw-cosi-driver get pods
 
-NAME                                         READY   STATUS    RESTARTS   AGE
-objectstorage-provisioner-6c8df56cc6-lqr26   2/2     Running   0          26h
+NAME                                              READY   STATUS    RESTARTS   AGE
+s3gw-objectstorage-provisioner-6c8df56cc6-lqr26   2/2     Running   0          26h
 ```
 
 ## Create BucketClaim, BucketAccess and consuming the claim in a pod
