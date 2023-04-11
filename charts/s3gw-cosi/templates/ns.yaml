@@ -1,7 +1,0 @@
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: s3gw-cosi-driver
-  labels:
-{{ include "s3gw-cosi.labels" . | indent 4 }}

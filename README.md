@@ -49,7 +49,7 @@ helm install s3gw-cosi charts/s3gw-cosi
 Check the driver pod:
 
 ```shell
-$ kubectl -n s3gw-cosi-driver get pods
+$ kubectl get pods
 
 NAME                                              READY   STATUS    RESTARTS   AGE
 s3gw-objectstorage-provisioner-6c8df56cc6-lqr26   2/2     Running   0          26h
