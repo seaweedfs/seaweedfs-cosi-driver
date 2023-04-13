@@ -18,13 +18,13 @@ objectstorage-controller-6fc5f89444-4ws72   1/1     Running   0          2d6h
 
 ## Building
 
-the driver's code can be compiled using:
+the driver code can be compiled using:
 
 ```shell
 make build
 ```
 
-Now build the docker image and provide a tag as `ghcr.io/giubacc/s3gw-cosi-driver:latest`
+Now build the docker image and provide a tag as `quay.io/s3gw/s3gw-cosi-driver:latest`
 
 ```shell
 $ make container
@@ -34,8 +34,8 @@ Sending build context to Docker daemon  41.95MB
 You can tag and push the docker image to a registry with:
 
 ```shell
-docker tag s3gw-cosi-driver:latest ghcr.io/giubacc/s3gw-cosi-driver:latest
-docker push ghcr.io/giubacc/s3gw-cosi-driver:latest
+docker tag s3gw-cosi-driver:latest quay.io/s3gw/s3gw-cosi-driver:latest
+docker push quay.io/s3gw/s3gw-cosi-driver:latest
 ```
 
 ## Installing with Helm

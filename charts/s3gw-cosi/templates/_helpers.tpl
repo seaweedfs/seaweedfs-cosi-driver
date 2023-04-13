@@ -60,7 +60,7 @@ Version helpers for the driver image tag
 {{- $defaulttag := printf "%s" "latest" }}
 {{- $tag := default $defaulttag .Values.driver.imageTag }}
 {{- $name := default "s3gw-cosi-driver" .Values.driver.imageName }}
-{{- $registry := default "ghcr.io/giubacc" .Values.driver.imageRegistry }}
+{{- $registry := default "quay.io/s3gw" .Values.driver.imageRegistry }}
 {{- printf "%s/%s:%s" $registry $name $tag }}
 {{- end }}
 
@@ -70,7 +70,7 @@ Version helpers for the sidecar image tag
 {{- define "s3gw-cosi.sidecarImage" -}}
 {{- $defaulttag := printf "%s" "latest" }}
 {{- $tag := default $defaulttag .Values.sidecar.imageTag }}
-{{- $name := default "objectstorage-sidecar" .Values.sidecar.imageName }}
-{{- $registry := default "ghcr.io/giubacc" .Values.sidecar.imageRegistry }}
+{{- $name := default "s3gw-cosi-sidecar" .Values.sidecar.imageName }}
+{{- $registry := default "quay.io/s3gw" .Values.sidecar.imageRegistry }}
 {{- printf "%s/%s:%s" $registry $name $tag }}
 {{- end }}
