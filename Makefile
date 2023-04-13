@@ -12,45 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-CMDS=s3gw-cosi-driver
+REGISTRY_NAME ?= quay.io/s3gw
+IMAGE_NAME ?= s3gw-cosi-driver
+IMAGE_TAG ?= latest
 
-REGISTRY_NAME=ghcr.io/giubacc
-IMAGE_TAGS=latest
+all: build container push
 
-all: build
-
-.PHONY: build-% build container-% container clean
-
-# A space-separated list of all commands in the repository, must be
-# set in main Makefile of a repository.
-# CMDS=
-
-# Revision that gets built into each binary via the main.version
-# string. Uses the `git describe` output based on the most recent
-# version tag with a short revision suffix or, if nothing has been
-# tagged yet, just the revision.
-#
-# Beware that tags may also be missing in shallow clones as done by
-# some CI systems (like TravisCI, which pulls only 50 commits).
-REV=$(shell git describe --long --tags --match='v*' --dirty 2>/dev/null || git rev-list -n1 HEAD)
-
-# Images are named after the command contained in them.
-IMAGE_NAME=$(REGISTRY_NAME)/$*
+.PHONY: build container clean
 
 ARCH := $(if $(GOARCH),$(GOARCH),$(shell go env GOARCH))
 
-# Specific packages can be excluded from each of the tests below by setting the *_FILTER_CMD variables
-# to something like "| grep -v 'github.com/kubernetes-csi/project/pkg/foobar'". See usage below.
-
-build-%:
+build:
 	mkdir -p bin
-	CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-X main.version=$(REV) -extldflags "-static"' -o ./bin/$* ./cmd/$*
+	CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o ./bin/s3gw-cosi-driver ./cmd/*
 
-container-%: build-%
-	docker build -t $*:latest -f $(shell if [ -e ./cmd/$*/Dockerfile ]; then echo ./cmd/$*/Dockerfile; else echo Dockerfile; fi) --label revision=$(REV) .
+container:
+	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) -f Dockerfile .
+	docker tag $(IMAGE_NAME):$(IMAGE_TAG) $(REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG)
 
-build: $(CMDS:%=build-%)
-container: $(CMDS:%=container-%)
+push:
+	docker push $(REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG)
 
 clean:
 	-rm -rf bin
