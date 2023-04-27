@@ -30,13 +30,12 @@ import (
 	"sigs.k8s.io/container-object-storage-interface-provisioner-sidecar/pkg/provisioner"
 )
 
-const provisionerName = "s3gw.objectstorage.k8s.io"
-
 var (
-	driverAddress = "unix:///var/lib/cosi/cosi.sock"
-	AccessKey     = ""
-	SecretKey     = ""
-	Endpoint      = ""
+	ProvisionerName = "s3gw.objectstorage.k8s.io"
+	driverAddress   = "unix:///var/lib/cosi/cosi.sock"
+	AccessKey       = ""
+	SecretKey       = ""
+	Endpoint        = ""
 )
 
 var cmd = &cobra.Command{
@@ -62,6 +61,12 @@ func init() {
 	persistentFlags.AddGoFlagSet(kflags)
 
 	stringFlag := persistentFlags.StringVarP
+
+	stringFlag(&ProvisionerName,
+		"drivername",
+		"n",
+		driverAddress,
+		"driver name")
 
 	stringFlag(&driverAddress,
 		"driver-addr",
@@ -98,7 +103,7 @@ func init() {
 
 func run(ctx context.Context, args []string) error {
 	identityServer, bucketProvisioner, err := driver.NewDriver(ctx,
-		provisionerName,
+		ProvisionerName,
 		Endpoint,
 		AccessKey,
 		SecretKey)
