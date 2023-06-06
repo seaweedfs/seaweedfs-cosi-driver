@@ -2,19 +2,11 @@
 
 COSI driver implementation for [s3gw](https://github.com/aquarist-labs/s3gw).
 
-## Installing CRDs and the COSI controller
+Note that the COSI driver alone is not sufficient to get COSI working
+on a Kubernetes cluster.
 
-```shell
-kubectl create -k github.com/kubernetes-sigs/container-object-storage-interface-api
-kubectl create -k github.com/kubernetes-sigs/container-object-storage-interface-controller
-```
-
-Check for the controller pod in the default namespace:
-
-```shell
-NAME                                        READY   STATUS    RESTARTS   AGE
-objectstorage-controller-6fc5f89444-4ws72   1/1     Running   0          2d6h
-```
+You can deploy a full COSI installation for s3gw following the instructions for the
+[s3gw's Helm charts](https://s3gw-docs.readthedocs.io/en/latest/helm-charts/).
 
 ## Building
 
@@ -38,24 +30,9 @@ docker tag s3gw-cosi-driver:latest quay.io/s3gw/s3gw-cosi-driver:latest
 docker push quay.io/s3gw/s3gw-cosi-driver:latest
 ```
 
-## Installing with Helm
+## Examples
 
-Now install the sidecar and the s3gw's COSI driver with:
-
-```shell
-helm install s3gw-cosi charts/s3gw-cosi
-```
-
-Check the driver pod:
-
-```shell
-$ kubectl get pods
-
-NAME                                              READY   STATUS    RESTARTS   AGE
-s3gw-objectstorage-provisioner-6c8df56cc6-lqr26   2/2     Running   0          26h
-```
-
-## Create BucketClaim, BucketAccess and consuming the claim in a pod
+### Create BucketClaim, BucketAccess and consuming the claim in a pod
 
 ```shell
 kubectl apply -f examples/bucketclass.yaml
