@@ -27,8 +27,8 @@ build:
 	CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o ./bin/s3gw-cosi-driver ./cmd/*
 
 test:
-  mkdir -p bin
-  CGO_ENABLED=0 GOOS=linux go test ./cmd/*
+	mkdir -p bin
+	CGO_ENABLED=0 GOOS=linux go test ./cmd/*
 
 container:
 	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) -f Dockerfile .
