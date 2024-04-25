@@ -1,4 +1,5 @@
 # Copyright 2023 SUSE, LLC.
+# Copyright 2024 s3gw maintainers.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,26 +17,46 @@ REGISTRY_NAME ?= quay.io/s3gw
 IMAGE_NAME ?= s3gw-cosi-driver
 IMAGE_TAG ?= latest
 
+GO ?= go
+ENGINE ?= docker
+
+GOFLAGS ?= -trimpath
+LDFLAGS ?= -s -w -extldflags "-static"
+GO_SETTINGS += CGO_ENABLED=0
+
+.PHONY: all
 all: build container push
 
-.PHONY: build container clean
-
-ARCH := $(if $(GOARCH),$(GOARCH),$(shell go env GOARCH))
-
+.PHONY: build
 build:
-	mkdir -p bin
-	CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o ./bin/s3gw-cosi-driver ./cmd/*
+	$(GO_SETTINGS) $(GO) build \
+		$(GOFLAGS) \
+		-ldflags="$(LDFLAGS)" \
+		-o=./bin/s3gw-cosi-driver \
+		./cmd/s3gw-cosi-driver
 
+.PHONY: test
 test:
-	mkdir -p bin
-	CGO_ENABLED=0 GOOS=linux go test ./cmd/*
+	$(GO_SETTINGS) $(GO) test $(GOFLAGS) \
+		-race \
+		-cover -covermode=atomic -coverprofile=coverage.out \
+		./...
 
+.PHONY: container
 container:
-	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) -f Dockerfile .
-	docker tag $(IMAGE_NAME):$(IMAGE_TAG) $(REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG)
+	$(ENGINE) build \
+		--tag=$(IMAGE_NAME):$(IMAGE_TAG) \
+		--file=Dockerfile \
+		.
 
+.PHONY: push
 push:
-	docker push $(REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG)
+	$(ENGINE) tag \
+		$(IMAGE_NAME):$(IMAGE_TAG)
+		$(REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG)
+	$(ENGINE) push \
+		$(REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG)
 
+.PHONY: clean
 clean:
 	-rm -rf bin

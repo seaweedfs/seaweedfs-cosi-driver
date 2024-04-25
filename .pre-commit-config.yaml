@@ -24,3 +24,8 @@ repos:
     rev: v0.13.0
     hooks:
       - id: markdownlint-cli2
+
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v1.56.2
+    hooks:
+      - id: golangci-lint
