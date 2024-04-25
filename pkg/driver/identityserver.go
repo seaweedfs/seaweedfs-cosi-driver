@@ -18,7 +18,6 @@ package driver
 
 import (
 	"context"
-	"fmt"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -38,12 +37,14 @@ func NewIdentityServer(provisionerName string) (cosispec.IdentityServer, error) 
 		provisioner: provisionerName,
 	}, nil
 }
+
 func (id *identityServer) DriverGetInfo(ctx context.Context,
 	req *cosispec.DriverGetInfoRequest) (*cosispec.DriverGetInfoResponse, error) {
 
 	if id.provisioner == "" {
-		klog.ErrorS(fmt.Errorf("provisioner name cannot be empty"), "invalid argument")
-		return nil, status.Error(codes.InvalidArgument, "Provisioner name is empty")
+		klog.ErrorS(ErrProvisionerNameEmpty, "invalid configuration")
+
+		return nil, status.Error(codes.Internal, "Provisioner name is empty")
 	}
 
 	return &cosispec.DriverGetInfoResponse{
