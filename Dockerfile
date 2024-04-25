@@ -54,12 +54,20 @@ ARG QUAY_EXPIRATION=Never
 ARG S3GW_VERSION=Development
 
 # Add labels.
-LABEL Name="s3gw-cosi-driver"
-LABEL Version=${S3GW_VERSION}
-LABEL description="COSI Driver for s3gw"
-LABEL license="Apache-2.0"
-LABEL maintainers="s3gw maintainers"
-LABEL quay.expires-after=${QUAY_EXPIRATION}
+
+## Standard opencontainers labels.
+LABEL org.opencontainers.image.title="s3gw-cosi-driver"
+LABEL org.opencontainers.image.description="COSI Driver for s3gw"
+LABEL org.opencontainers.image.authors="s3gw maintainers"
+LABEL org.opencontainers.image.vendor="s3gw-tech"
+LABEL org.opencontainers.image.version="${S3GW_VERSION}"
+LABEL org.opencontainers.image.license="Apache-2.0"
+LABEL org.opencontainers.image.source="https://github.com/s3gw-tech/s3gw-cosi-driver"
+LABEL org.opencontainers.image.documentation="http://docs.s3gw.tech"
+LABEL org.opencontainers.image.base.name="gcr.io/distroless/static:latest"
+
+## Quay specific labels.
+LABEL quay.expires-after="${QUAY_EXPIRATION}"
 
 # Set the entrypoint.
 ENTRYPOINT [ "/usr/bin/3gw-cosi-driver" ]
