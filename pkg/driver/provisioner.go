@@ -31,17 +31,20 @@ import (
 	cosispec "sigs.k8s.io/container-object-storage-interface-spec"
 )
 
-// contains two clients
-// 1.) for RGWAdminOps : mainly for user related operations
-// 2.) for S3 operations : mainly for bucket related operations
+// provisionerServer implements cosi.ProvisionerServer interface.
+// It contains two clients:
+// - s3Client for RGWAdminOps: mainly for user related operations
+// - rgwAdminClient for S3 operations: mainly for bucket related operations
 type provisionerServer struct {
 	provisioner    string
 	s3Client       *s3client.S3Agent
 	rgwAdminClient *rgwadmin.API
 }
 
+// Interface guards.
 var _ cosispec.ProvisionerServer = &provisionerServer{}
 
+// NewProvisionerServer returns provisioner.Server with initialized clients.
 func NewProvisionerServer(provisioner, rgwEndpoint, accessKey, secretKey string) (cosispec.ProvisionerServer, error) {
 	// TODO: use different user this operation
 	s3Client, err := s3client.NewS3Agent(accessKey, secretKey, rgwEndpoint, true)
@@ -62,14 +65,11 @@ func NewProvisionerServer(provisioner, rgwEndpoint, accessKey, secretKey string)
 	}, nil
 }
 
-// ProvisionerCreateBucket is an idempotent method for creating buckets
-// It is expected to create the same bucket given a bucketName and protocol
-// If the bucket already exists, then it MUST return codes.AlreadyExists
-// Return values
+// DriverCreateBucket call is made to create the bucket in the backend.
 //
-//	nil -                   Bucket successfully created
-//	codes.AlreadyExists -   Bucket already exists. No more retries
-//	non-nil err -           Internal error                                [requeue'd with exponential backoff]
+// NOTE: this call needs to be idempotent.
+//  1. If a bucket that matches both name and parameters already exists, then OK (success) must be returned.
+//  2. If a bucket by same name, but different parameters is provided, then the appropriate error code ALREADY_EXISTS must be returned.
 func (s *provisionerServer) DriverCreateBucket(
 	ctx context.Context,
 	req *cosispec.DriverCreateBucketRequest,
@@ -120,6 +120,10 @@ func (s *provisionerServer) DriverCreateBucket(
 	}, nil
 }
 
+// DriverDeleteBucket call is made to delete the bucket in the backend.
+//
+// NOTE: this call needs to be idempotent.
+// If the bucket has already been deleted, then no error should be returned.
 func (s *provisionerServer) DriverDeleteBucket(
 	ctx context.Context,
 	req *cosispec.DriverDeleteBucketRequest,
@@ -140,6 +144,12 @@ func (s *provisionerServer) DriverDeleteBucket(
 	return &cosispec.DriverDeleteBucketResponse{}, nil
 }
 
+// DriverGrantBucketAccess call grants access to an account.
+// The account_name in the request shall be used as a unique identifier to create credentials.
+//
+// NOTE: this call needs to be idempotent.
+// The account_id returned in the response will be used as the unique identifier for deleting this access when calling DriverRevokeBucketAccess.
+// The returned secret does not need to be the same each call to achieve idempotency.
 func (s *provisionerServer) DriverGrantBucketAccess(
 	ctx context.Context,
 	req *cosispec.DriverGrantBucketAccessRequest,
@@ -200,6 +210,9 @@ func (s *provisionerServer) DriverGrantBucketAccess(
 	}, nil
 }
 
+// DriverRevokeBucketAccess call revokes all access to a particular bucket from a principal.
+//
+// NOTE: this call needs to be idempotent.
 func (s *provisionerServer) DriverRevokeBucketAccess(
 	ctx context.Context,
 	req *cosispec.DriverRevokeBucketAccessRequest,
@@ -227,10 +240,13 @@ func fetchUserCredentials(user rgwadmin.User, endpoint string, region string) ma
 	s3Keys["accessSecretKey"] = user.Keys[0].SecretKey
 	s3Keys["endpoint"] = endpoint
 	s3Keys["region"] = region
+
 	creds := &cosispec.CredentialDetails{
 		Secrets: s3Keys,
 	}
+
 	credDetails := make(map[string]*cosispec.CredentialDetails)
 	credDetails["s3"] = creds
+
 	return credDetails
 }
