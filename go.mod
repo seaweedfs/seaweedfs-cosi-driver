@@ -1,6 +1,6 @@
 module github.com/s3gw-tech/s3gw-cosi-driver
 
-go 1.22
+go 1.22.3
 
 require (
 	github.com/aws/aws-sdk-go v1.44.67
