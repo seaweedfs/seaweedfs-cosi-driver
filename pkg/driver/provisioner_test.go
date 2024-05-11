@@ -1,5 +1,6 @@
 /*
 Copyright 2023 SUSE, LLC.
+Copyright 2024 s3gw contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 You may not use this file except in compliance with the License.
@@ -26,7 +27,7 @@ import (
 	"reflect"
 	"testing"
 
-	s3cli "s3gw-cosi-driver/pkg/util/s3client"
+	s3cli "github.com/s3gw-tech/s3gw-cosi-driver/pkg/util/s3client"
 
 	rgwadmin "github.com/ceph/go-ceph/rgw/admin"
 	cosispec "sigs.k8s.io/container-object-storage-interface-spec"

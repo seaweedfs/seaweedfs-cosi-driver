@@ -1,6 +1,6 @@
 # s3gw-cosi-driver
 
-COSI driver implementation for [s3gw](https://github.com/aquarist-labs/s3gw).
+COSI driver implementation for [s3gw](https://github.com/s3gw-tech/s3gw).
 
 Note that the COSI driver alone is not sufficient to get COSI working
 on a Kubernetes cluster.
@@ -19,15 +19,13 @@ make build
 Now build the docker image and provide a tag as `quay.io/s3gw/s3gw-cosi-driver:latest`
 
 ```shell
-$ make container
-Sending build context to Docker daemon  41.95MB
+make container
 ```
 
 You can tag and push the docker image to a registry with:
 
 ```shell
-docker tag s3gw-cosi-driver:latest quay.io/s3gw/s3gw-cosi-driver:latest
-docker push quay.io/s3gw/s3gw-cosi-driver:latest
+make push REGISTRY_NAME=quay.io/s3gw
 ```
 
 ## Examples

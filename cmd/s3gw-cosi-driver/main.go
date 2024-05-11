@@ -1,5 +1,6 @@
 /*
 Copyright 2023 SUSE, LLC.
+Copyright 2024 s3gw contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 You may not use this file except in compliance with the License.
@@ -18,31 +19,69 @@ package main
 
 import (
 	"context"
+	"flag"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
+	"github.com/s3gw-tech/s3gw-cosi-driver/pkg/driver"
+	"github.com/s3gw-tech/s3gw-cosi-driver/pkg/envflag"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/container-object-storage-interface-provisioner-sidecar/pkg/provisioner"
 )
 
+type runOptions struct {
+	driverName   string
+	cosiEndpoint string
+	accessKey    string
+	secretKey    string
+	rgwEndpoint  string
+}
+
 func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	klog.InitFlags(nil)
+	flag.Parse()
 
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		sig := <-sigs
-		klog.InfoS("Signal received", "type", sig)
-		cancel()
-
-		<-time.After(30 * time.Second)
-		os.Exit(1)
-	}()
-
-	if err := cmd.ExecuteContext(ctx); err != nil {
-		klog.ErrorS(err, "Exiting on error")
+	opts := runOptions{
+		driverName:   envflag.String("DRIVERNAME", "s3gw.objectstorage.k8s.io"),
+		cosiEndpoint: envflag.String("COSI_ENDPOINT", "unix:///var/lib/cosi/cosi.sock"),
+		accessKey:    envflag.String("ACCESSKEY", ""),
+		secretKey:    envflag.String("SECRETKEY", ""),
+		rgwEndpoint:  envflag.String("ENDPOINT", ""),
 	}
+
+	if err := run(context.Background(), opts); err != nil {
+		klog.ErrorS(err, "exiting on error")
+		os.Exit(1)
+	}
+}
+
+func run(ctx context.Context, opts runOptions) error {
+	ctx, stop := signal.NotifyContext(ctx,
+		os.Interrupt,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+	)
+	defer stop()
+
+	identityServer, provisionerServer, err := driver.NewDriver(ctx,
+		opts.driverName,
+		opts.rgwEndpoint,
+		opts.secretKey,
+		opts.secretKey,
+	)
+	if err != nil {
+		return err
+	}
+
+	server, err := provisioner.NewDefaultCOSIProvisionerServer(
+		opts.cosiEndpoint,
+		identityServer,
+		provisionerServer,
+	)
+	if err != nil {
+		return err
+	}
+
+	return server.Run(ctx)
 }

@@ -1,5 +1,6 @@
 /*
 Copyright 2023 SUSE, LLC.
+Copyright 2024 s3gw contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 You may not use this file except in compliance with the License.
@@ -19,19 +20,16 @@ package driver
 import (
 	"context"
 
-	"k8s.io/klog/v2"
 	cosispec "sigs.k8s.io/container-object-storage-interface-spec"
 )
 
 func NewDriver(ctx context.Context, provisionerName, rgwEndpoint, accessKey, secretKey string) (cosispec.IdentityServer, cosispec.ProvisionerServer, error) {
 	provisionerServer, err := NewProvisionerServer(provisionerName, rgwEndpoint, accessKey, secretKey)
 	if err != nil {
-		klog.Fatal(err, "failed to create provisioner server")
 		return nil, nil, err
 	}
 	identityServer, err := NewIdentityServer(provisionerName)
 	if err != nil {
-		klog.Fatal(err, "failed to create provisioner server")
 		return nil, nil, err
 	}
 	return identityServer, provisionerServer, nil

@@ -1,5 +1,6 @@
 /*
 Copyright 2023 SUSE, LLC.
+Copyright 2024 s3gw contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 You may not use this file except in compliance with the License.
@@ -18,7 +19,6 @@ package driver
 
 import (
 	"context"
-	"fmt"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -27,23 +27,29 @@ import (
 	cosispec "sigs.k8s.io/container-object-storage-interface-spec"
 )
 
+// identityServer implements cosi.IdentityServer interface.
 type identityServer struct {
 	provisioner string
 }
 
+// Interface guards.
 var _ cosispec.IdentityServer = &identityServer{}
 
+// NewIdentityServer returns IdentityServer with provisioner set to the "provisionerName" argument.
 func NewIdentityServer(provisionerName string) (cosispec.IdentityServer, error) {
 	return &identityServer{
 		provisioner: provisionerName,
 	}, nil
 }
+
+// DriverGetInfo call is meant to retrieve the unique provisioner Identity.
 func (id *identityServer) DriverGetInfo(ctx context.Context,
 	req *cosispec.DriverGetInfoRequest) (*cosispec.DriverGetInfoResponse, error) {
 
 	if id.provisioner == "" {
-		klog.ErrorS(fmt.Errorf("provisioner name cannot be empty"), "invalid argument")
-		return nil, status.Error(codes.InvalidArgument, "Provisioner name is empty")
+		klog.ErrorS(ErrProvisionerNameEmpty, "invalid configuration")
+
+		return nil, status.Error(codes.Internal, "Provisioner name is empty")
 	}
 
 	return &cosispec.DriverGetInfoResponse{
