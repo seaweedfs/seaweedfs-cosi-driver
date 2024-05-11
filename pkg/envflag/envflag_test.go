@@ -1,6 +1,6 @@
 /*
 Copyright 2023 Akamai Technologies, Inc.
-Copyright 2024 s3gw maintainers.
+Copyright 2024 s3gw contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

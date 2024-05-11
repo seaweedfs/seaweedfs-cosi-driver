@@ -70,5 +70,5 @@ LABEL org.opencontainers.image.base.name="gcr.io/distroless/static:latest"
 LABEL quay.expires-after="${QUAY_EXPIRATION}"
 
 # Set the entrypoint.
-ENTRYPOINT [ "/usr/bin/3gw-cosi-driver" ]
+ENTRYPOINT [ "/usr/bin/s3gw-cosi-driver" ]
 CMD []
