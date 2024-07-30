@@ -22,7 +22,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/s3gw-tech/s3gw-cosi-driver/pkg/envflag"
+	"github.com/seaweedfs/seaweedfs-cosi-driver/pkg/envflag"
 )
 
 //nolint:paralleltest

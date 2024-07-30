@@ -2,5 +2,5 @@ kind: BucketClass
 apiVersion: objectstorage.k8s.io/v1alpha1
 metadata:
   name: sample-bcc
-driverName: s3gw.objectstorage.k8s.io
+driverName: swaweedfs.objectstorage.k8s.io
 deletionPolicy: Delete

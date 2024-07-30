@@ -27,7 +27,7 @@ import (
 	"reflect"
 	"testing"
 
-	s3cli "github.com/s3gw-tech/s3gw-cosi-driver/pkg/util/s3client"
+	s3cli "github.com/seaweedfs/seaweedfs-cosi-driver/pkg/util/s3client"
 
 	rgwadmin "github.com/ceph/go-ceph/rgw/admin"
 	cosispec "sigs.k8s.io/container-object-storage-interface-spec"

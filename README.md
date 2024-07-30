@@ -1,22 +1,22 @@
-# s3gw-cosi-driver
+# seaweedfs-cosi-driver
 
-COSI driver implementation for [s3gw](https://github.com/s3gw-tech/s3gw).
+COSI driver implementation for [SeaweedFS](https://github.com/chrislusf/seaweedfs).
 
 Note that the COSI driver alone is not sufficient to get COSI working
 on a Kubernetes cluster.
 
-You can deploy a full COSI installation for s3gw following the instructions for the
-[s3gw's Helm charts](https://s3gw-docs.readthedocs.io/en/latest/helm-charts/).
+You can deploy a full COSI installation for SeaweedFS following the instructions for the
+[SeaweedFS's Helm charts](https://seaweedfs.github.io/seaweedfs/helm/).
 
 ## Building
 
-the driver code can be compiled using:
+The driver code can be compiled using:
 
 ```shell
 make build
 ```
 
-Now build the docker image and provide a tag as `quay.io/s3gw/s3gw-cosi-driver:latest`
+Now build the docker image and provide a tag as `quay.io/seaweedfs/seaweedfs-cosi-driver:latest`
 
 ```shell
 make container
@@ -25,7 +25,7 @@ make container
 You can tag and push the docker image to a registry with:
 
 ```shell
-make push REGISTRY_NAME=quay.io/s3gw
+make push REGISTRY_NAME=quay.io/seaweedfs
 ```
 
 ## Examples
@@ -66,7 +66,7 @@ file named: `BucketInfo` containing a json:
     "bucketName": "sample-bccf98111be-2edb-402e-a95e-628e178f2818",
     "authenticationType": "KEY",
     "secretS3": {
-      "endpoint": "http://s3gw.s3gw.svc.cluster.local",
+      "endpoint": "http://seaweedfs.seaweedfs.svc.cluster.local",
       "region": "US",
       "accessKeyID": "N7DFI9CCZWZ6QJXI5V1O",
       "accessSecretKey": "2RjtQa3JqPQKVQPf2ux4v8xtdszL8bNtsfna8vV0"

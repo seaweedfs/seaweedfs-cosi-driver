@@ -5,7 +5,6 @@ go 1.22.3
 require (
 	github.com/aws/aws-sdk-go v1.54.13
 	github.com/ceph/go-ceph v0.17.0
-	github.com/s3gw-tech/s3gw-cosi-driver v0.0.0-20240511090044-132c710236d0
 	github.com/seaweedfs/seaweedfs v0.0.0-20240730174901-69bcdf470bf6
 	google.golang.org/grpc v1.64.1
 	k8s.io/apimachinery v0.24.2

@@ -2,5 +2,5 @@ kind: BucketAccessClass
 apiVersion: objectstorage.k8s.io/v1alpha1
 metadata:
   name: sample-bac
-driverName: s3gw.objectstorage.k8s.io
+driverName: seaweedfs.objectstorage.k8s.io
 authenticationType: KEY
