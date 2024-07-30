@@ -18,13 +18,18 @@ limitations under the License.
 package driver
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"io/ioutil"
 
+	"github.com/seaweedfs/seaweedfs/weed/filer"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
+	"github.com/seaweedfs/seaweedfs/weed/pb/iam_pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -42,6 +47,14 @@ type provisionerServer struct {
 
 // Interface guards.
 var _ cosispec.ProvisionerServer = &provisionerServer{}
+
+func randomHex(n int) (string, error) {
+	bytes := make([]byte, n)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
 
 // Create a new SeaweedFS Filer client for interacting with the Filer.
 func createFilerClient(filerEndpoint, accessKey, secretKey, caCertPath, clientCertPath, clientKeyPath string) (filer_pb.SeaweedFilerClient, error) {
@@ -170,12 +183,149 @@ func (s *provisionerServer) DriverDeleteBucket(
 	return &cosispec.DriverDeleteBucketResponse{}, nil
 }
 
-// Grant access to a bucket. This example simply logs the action.
-// In practice, this could involve setting permissions or policies at the Filer or IAM level.
+// Grant access to a bucket.
 func (s *provisionerServer) grantBucketAccess(ctx context.Context, bucketId, userId string) error {
-	// Log the grant access action. Implement actual access control as required.
-	klog.InfoS("Granted access to bucket", "bucketId", bucketId, "userId", userId)
+	accessKey, err := randomHex(16)
+	if err != nil {
+		return fmt.Errorf("failed to generate access key: %w", err)
+	}
+	secretKey, err := randomHex(32)
+	if err != nil {
+		return fmt.Errorf("failed to generate secret key: %w", err)
+	}
+
+	actions := []string{"Read", "Write", "List", "Tagging"}
+	var cmdActions []string
+	for _, action := range actions {
+		cmdActions = append(cmdActions, fmt.Sprintf("%s:%s", action, bucketId))
+	}
+
+	err = s.configureS3Access(ctx, userId, accessKey, secretKey, cmdActions, false)
+	if err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// Revoke access to a bucket.
+func (s *provisionerServer) revokeBucketAccess(ctx context.Context, userId string) error {
+	err := s.configureS3Access(ctx, userId, "", "", nil, true)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Configure S3 access in SeaweedFS.
+func (s *provisionerServer) configureS3Access(ctx context.Context, user, accessKey, secretKey string, actions []string, isDelete bool) error {
+	var buf bytes.Buffer
+	if err := s.readS3Configuration(ctx, &buf); err != nil {
+		return err
+	}
+
+	s3cfg := &iam_pb.S3ApiConfiguration{}
+	if buf.Len() > 0 {
+		if err := filer.ParseS3ConfigurationFromBytes(buf.Bytes(), s3cfg); err != nil {
+			return err
+		}
+	}
+
+	idx := -1
+	for i, identity := range s3cfg.Identities {
+		if user == identity.Name {
+			idx = i
+			break
+		}
+	}
+
+	if idx == -1 && isDelete {
+		// User not found and trying to delete, nothing to do
+		return nil
+	}
+
+	if idx == -1 {
+		// Add new user
+		identity := iam_pb.Identity{
+			Name:        user,
+			Actions:     actions,
+			Credentials: []*iam_pb.Credential{},
+		}
+		if accessKey != "" && secretKey != "" {
+			identity.Credentials = append(identity.Credentials, &iam_pb.Credential{
+				AccessKey: accessKey,
+				SecretKey: secretKey,
+			})
+		}
+		s3cfg.Identities = append(s3cfg.Identities, &identity)
+	} else {
+		// Update existing user
+		if isDelete {
+			s3cfg.Identities = append(s3cfg.Identities[:idx], s3cfg.Identities[idx+1:]...)
+		} else {
+			if accessKey != "" && secretKey != "" {
+				s3cfg.Identities[idx].Credentials = append(s3cfg.Identities[idx].Credentials, &iam_pb.Credential{
+					AccessKey: accessKey,
+					SecretKey: secretKey,
+				})
+			}
+			for _, action := range actions {
+				if !contains(s3cfg.Identities[idx].Actions, action) {
+					s3cfg.Identities[idx].Actions = append(s3cfg.Identities[idx].Actions, action)
+				}
+			}
+		}
+	}
+
+	buf.Reset()
+	filer.ProtoToText(&buf, s3cfg)
+
+	if err := s.saveS3Configuration(ctx, buf.Bytes()); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Read the S3 configuration from the SeaweedFS Filer.
+func (s *provisionerServer) readS3Configuration(ctx context.Context, buf *bytes.Buffer) error {
+	entry, err := s.filerClient.LookupDirectoryEntry(ctx, &filer_pb.LookupDirectoryEntryRequest{
+		Directory: filer.IamConfigDirectory,
+		Name:      filer.IamIdentityFile,
+	})
+	if err != nil {
+		return err
+	}
+
+	if entry.Entry != nil && entry.Entry.Content != nil {
+		buf.Write(entry.Entry.Content)
+	}
+
+	return nil
+}
+
+// Save the S3 configuration to the SeaweedFS Filer.
+func (s *provisionerServer) saveS3Configuration(ctx context.Context, data []byte) error {
+	_, err := s.filerClient.UpdateEntry(ctx, &filer_pb.UpdateEntryRequest{
+		Directory: filer.IamConfigDirectory,
+		Entry: &filer_pb.Entry{
+			Name:        filer.IamIdentityFile,
+			Content:     data,
+			IsDirectory: false,
+		},
+	})
+	return err
+}
+
+// Helper function to check if a string slice contains a string.
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
 // DriverGrantBucketAccess call grants access to a bucket.
@@ -192,7 +342,6 @@ func (s *provisionerServer) DriverGrantBucketAccess(
 		return nil, status.Error(codes.Internal, "failed to grant bucket access")
 	}
 
-	// Placeholder for generating access credentials
 	credentials := map[string]string{
 		"accessKey": "exampleAccessKey",
 		"secretKey": "exampleSecretKey",
@@ -206,14 +355,6 @@ func (s *provisionerServer) DriverGrantBucketAccess(
 			},
 		},
 	}, nil
-}
-
-// Revoke access to a bucket. This example simply logs the action.
-// In practice, this would involve removing permissions or policies.
-func (s *provisionerServer) revokeBucketAccess(ctx context.Context, accountId string) error {
-	// Log the revoke access action. Implement actual access control removal as required.
-	klog.InfoS("Revoked access for account", "accountId", accountId)
-	return nil
 }
 
 // DriverRevokeBucketAccess call revokes all access to a particular bucket.
