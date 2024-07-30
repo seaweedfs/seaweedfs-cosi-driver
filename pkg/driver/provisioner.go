@@ -22,6 +22,7 @@ import (
 	"fmt"
 
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
@@ -37,6 +38,21 @@ type provisionerServer struct {
 
 // Interface guards.
 var _ cosispec.ProvisionerServer = &provisionerServer{}
+
+// Create a new SeaweedFS Filer client for interacting with the Filer.
+func createFilerClient(filerEndpoint, accessKey, secretKey string) (filer_pb.SeaweedFilerClient, error) {
+	conn, err := grpc.Dial(filerEndpoint, grpc.WithInsecure()) // Assuming no TLS for simplicity
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to filer: %w", err)
+	}
+	return filer_pb.NewSeaweedFilerClient(conn), nil
+}
+
+// Get the directory path in the Filer where buckets are stored.
+func getFilerBucketsPath(filerClient filer_pb.SeaweedFilerClient) (string, error) {
+	// Assuming a default bucket storage directory path or fetching it from Filer configuration
+	return "/buckets", nil
+}
 
 // NewProvisionerServer returns provisioner.Server with initialized clients.
 func NewProvisionerServer(provisioner, filerEndpoint, accessKey, secretKey string) (cosispec.ProvisionerServer, error) {
@@ -59,21 +75,33 @@ func NewProvisionerServer(provisioner, filerEndpoint, accessKey, secretKey strin
 	}, nil
 }
 
-
-// Create a new SeaweedFS Filer client for interacting with the Filer.
-func createFilerClient(filerEndpoint, accessKey, secretKey string) (filer_pb.SeaweedFilerClient, error) {
-	conn, err := grpc.Dial(filerEndpoint, grpc.WithInsecure()) // Assuming no TLS for simplicity
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to filer: %w", err)
+// Create a bucket in SeaweedFS using the Filer.
+func (s *provisionerServer) createBucket(ctx context.Context, bucketName string) error {
+	req := &filer_pb.CreateEntryRequest{
+		Directory: s.filerBucketsPath,
+		Entry: &filer_pb.Entry{
+			Name:        bucketName,
+			IsDirectory: true,
+		},
 	}
-	return filer_pb.NewSeaweedFilerClient(conn), nil
+	_, err := s.filerClient.CreateEntry(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to create bucket in filer: %w", err)
+	}
+	return nil
 }
 
-
-// Get the directory path in the Filer where buckets are stored.
-func getFilerBucketsPath(filerClient filer_pb.SeaweedFilerClient) (string, error) {
-	// Assuming a default bucket storage directory path or fetching it from Filer configuration
-	return "/buckets", nil
+// Delete a bucket in SeaweedFS using the Filer.
+func (s *provisionerServer) deleteBucket(ctx context.Context, bucketId string) error {
+	req := &filer_pb.DeleteEntryRequest{
+		Directory: s.filerBucketsPath,
+		Name:      bucketId,
+	}
+	_, err := s.filerClient.DeleteEntry(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to delete bucket in filer: %w", err)
+	}
+	return nil
 }
 
 // DriverCreateBucket call is made to create the bucket in the backend.
@@ -96,22 +124,6 @@ func (s *provisionerServer) DriverCreateBucket(
 	}, nil
 }
 
-// Create a bucket in SeaweedFS using the Filer.
-func (s *provisionerServer) createBucket(ctx context.Context, bucketName string) error {
-	req := &filer_pb.CreateEntryRequest{
-		Directory: s.filerBucketsPath,
-		Entry: &filer_pb.Entry{
-			Name:        bucketName,
-			IsDirectory: true,
-		},
-	}
-	_, err := s.filerClient.CreateEntry(ctx, req)
-	if err != nil {
-		return fmt.Errorf("failed to create bucket in filer: %w", err)
-	}
-	return nil
-}
-
 // DriverDeleteBucket call is made to delete the bucket in the backend.
 func (s *provisionerServer) DriverDeleteBucket(
 	ctx context.Context,
@@ -130,16 +142,11 @@ func (s *provisionerServer) DriverDeleteBucket(
 	return &cosispec.DriverDeleteBucketResponse{}, nil
 }
 
-// Delete a bucket in SeaweedFS using the Filer.
-func (s *provisionerServer) deleteBucket(ctx context.Context, bucketId string) error {
-	req := &filer_pb.DeleteEntryRequest{
-		Directory: s.filerBucketsPath,
-		Name:      bucketId,
-	}
-	_, err := s.filerClient.DeleteEntry(ctx, req)
-	if err != nil {
-		return fmt.Errorf("failed to delete bucket in filer: %w", err)
-	}
+// Grant access to a bucket. This example simply logs the action.
+// In practice, this could involve setting permissions or policies at the Filer or IAM level.
+func (s *provisionerServer) grantBucketAccess(ctx context.Context, bucketId, userId string) error {
+	// Log the grant access action. Implement actual access control as required.
+	klog.InfoS("Granted access to bucket", "bucketId", bucketId, "userId", userId)
 	return nil
 }
 
@@ -165,17 +172,19 @@ func (s *provisionerServer) DriverGrantBucketAccess(
 
 	return &cosispec.DriverGrantBucketAccessResponse{
 		AccountId: req.GetName(),
-		Credentials: &cosispec.CredentialDetails{
-			Secrets: credentials,
+		Credentials: map[string]*cosispec.CredentialDetails{
+			"s3": {
+				Secrets: credentials,
+			},
 		},
 	}, nil
 }
 
-// Grant access to a bucket. This example simply logs the action.
-// In practice, this could involve setting permissions or policies at the Filer or IAM level.
-func (s *provisionerServer) grantBucketAccess(ctx context.Context, bucketId, userId string) error {
-	// Log the grant access action. Implement actual access control as required.
-	klog.InfoS("Granted access to bucket", "bucketId", bucketId, "userId", userId)
+// Revoke access to a bucket. This example simply logs the action.
+// In practice, this would involve removing permissions or policies.
+func (s *provisionerServer) revokeBucketAccess(ctx context.Context, accountId string) error {
+	// Log the revoke access action. Implement actual access control removal as required.
+	klog.InfoS("Revoked access for account", "accountId", accountId)
 	return nil
 }
 
@@ -194,13 +203,4 @@ func (s *provisionerServer) DriverRevokeBucketAccess(
 	}
 
 	return &cosispec.DriverRevokeBucketAccessResponse{}, nil
-}
-
-
-// Revoke access to a bucket. This example simply logs the action.
-// In practice, this would involve removing permissions or policies.
-func (s *provisionerServer) revokeBucketAccess(ctx context.Context, accountId string) error {
-	// Log the revoke access action. Implement actual access control removal as required.
-	klog.InfoS("Revoked access for account", "accountId", accountId)
-	return nil
 }
