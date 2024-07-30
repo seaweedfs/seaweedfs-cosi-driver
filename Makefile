@@ -1,5 +1,5 @@
 # Copyright 2023 SUSE, LLC.
-# Copyright 2024 s3gw contributors.
+# Copyright 2024 seaweedfs contributors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,8 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-REGISTRY_NAME ?= quay.io/s3gw
-IMAGE_NAME ?= s3gw-cosi-driver
+REGISTRY_NAME ?= quay.io/seaweedfs
+IMAGE_NAME ?= seaweedfs-cosi-driver
 IMAGE_TAG ?= latest
 
 GO ?= go
@@ -32,8 +32,8 @@ build:
 	$(GO_SETTINGS) $(GO) build \
 		$(GOFLAGS) \
 		-ldflags="$(LDFLAGS)" \
-		-o=./bin/s3gw-cosi-driver \
-		./cmd/s3gw-cosi-driver
+		-o=./bin/seaweedfs-cosi-driver \
+		./cmd/seaweedfs-cosi-driver
 
 .PHONY: test
 test:

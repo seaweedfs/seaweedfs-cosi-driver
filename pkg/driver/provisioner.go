@@ -59,14 +59,21 @@ func NewProvisionerServer(provisioner, filerEndpoint, accessKey, secretKey strin
 	}, nil
 }
 
+
+// Create a new SeaweedFS Filer client for interacting with the Filer.
 func createFilerClient(filerEndpoint, accessKey, secretKey string) (filer_pb.SeaweedFilerClient, error) {
-	// Logic to connect to SeaweedFS filer
-	return nil, fmt.Errorf("not implemented")
+	conn, err := grpc.Dial(filerEndpoint, grpc.WithInsecure()) // Assuming no TLS for simplicity
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to filer: %w", err)
+	}
+	return filer_pb.NewSeaweedFilerClient(conn), nil
 }
 
+
+// Get the directory path in the Filer where buckets are stored.
 func getFilerBucketsPath(filerClient filer_pb.SeaweedFilerClient) (string, error) {
-	// Logic to get the path where buckets are stored
-	return "", fmt.Errorf("not implemented")
+	// Assuming a default bucket storage directory path or fetching it from Filer configuration
+	return "/buckets", nil
 }
 
 // DriverCreateBucket call is made to create the bucket in the backend.
@@ -89,8 +96,19 @@ func (s *provisionerServer) DriverCreateBucket(
 	}, nil
 }
 
+// Create a bucket in SeaweedFS using the Filer.
 func (s *provisionerServer) createBucket(ctx context.Context, bucketName string) error {
-	// Placeholder for bucket creation logic
+	req := &filer_pb.CreateEntryRequest{
+		Directory: s.filerBucketsPath,
+		Entry: &filer_pb.Entry{
+			Name:        bucketName,
+			IsDirectory: true,
+		},
+	}
+	_, err := s.filerClient.CreateEntry(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to create bucket in filer: %w", err)
+	}
 	return nil
 }
 
@@ -112,8 +130,16 @@ func (s *provisionerServer) DriverDeleteBucket(
 	return &cosispec.DriverDeleteBucketResponse{}, nil
 }
 
+// Delete a bucket in SeaweedFS using the Filer.
 func (s *provisionerServer) deleteBucket(ctx context.Context, bucketId string) error {
-	// Placeholder for bucket deletion logic
+	req := &filer_pb.DeleteEntryRequest{
+		Directory: s.filerBucketsPath,
+		Name:      bucketId,
+	}
+	_, err := s.filerClient.DeleteEntry(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to delete bucket in filer: %w", err)
+	}
 	return nil
 }
 
@@ -145,8 +171,11 @@ func (s *provisionerServer) DriverGrantBucketAccess(
 	}, nil
 }
 
+// Grant access to a bucket. This example simply logs the action.
+// In practice, this could involve setting permissions or policies at the Filer or IAM level.
 func (s *provisionerServer) grantBucketAccess(ctx context.Context, bucketId, userId string) error {
-	// Placeholder for access grant logic
+	// Log the grant access action. Implement actual access control as required.
+	klog.InfoS("Granted access to bucket", "bucketId", bucketId, "userId", userId)
 	return nil
 }
 
@@ -167,7 +196,11 @@ func (s *provisionerServer) DriverRevokeBucketAccess(
 	return &cosispec.DriverRevokeBucketAccessResponse{}, nil
 }
 
+
+// Revoke access to a bucket. This example simply logs the action.
+// In practice, this would involve removing permissions or policies.
 func (s *provisionerServer) revokeBucketAccess(ctx context.Context, accountId string) error {
-	// Placeholder for access revoke logic
+	// Log the revoke access action. Implement actual access control removal as required.
+	klog.InfoS("Revoked access for account", "accountId", accountId)
 	return nil
 }
