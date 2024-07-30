@@ -2,7 +2,7 @@
 Copyright 2023 SUSE, LLC.
 
 Licensed under the Apache License, Version 2.0 (the "License");
-You may not use this file except in compliance with the License.
+you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
@@ -42,14 +42,14 @@ func TestIdentityServer_DriverGetInfo(t *testing.T) {
 		{
 			name: "Test DriverGetInfo",
 			fields: fields{
-				provisioner: "s3gw-cosi-driver",
+				provisioner: "seaweedfs-cosi-driver",
 			},
 			args: args{
 				ctx: context.Background(),
 				req: &cosi.DriverGetInfoRequest{},
 			},
 			want: &cosi.DriverGetInfoResponse{
-				Name: "s3gw-cosi-driver",
+				Name: "seaweedfs-cosi-driver",
 			},
 			wantErr: false,
 		},

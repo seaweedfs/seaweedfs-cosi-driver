@@ -1,9 +1,9 @@
 /*
 Copyright 2023 SUSE, LLC.
-Copyright 2024 s3gw contributors.
+Copyright 2024 SeaweedFS contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
-You may not use this file except in compliance with the License.
+you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
@@ -24,18 +24,18 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/s3gw-tech/s3gw-cosi-driver/pkg/driver"
-	"github.com/s3gw-tech/s3gw-cosi-driver/pkg/envflag"
+	"github.com/seaweedfs/seaweedfs-cosi-driver/pkg/driver"
+	"github.com/seaweedfs/seaweedfs-cosi-driver/pkg/envflag"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/container-object-storage-interface-provisioner-sidecar/pkg/provisioner"
 )
 
 type runOptions struct {
-	driverName   string
-	cosiEndpoint string
-	accessKey    string
-	secretKey    string
-	rgwEndpoint  string
+	driverName    string
+	cosiEndpoint  string
+	accessKey     string
+	secretKey     string
+	filerEndpoint string
 }
 
 func main() {
@@ -43,11 +43,11 @@ func main() {
 	flag.Parse()
 
 	opts := runOptions{
-		driverName:   envflag.String("DRIVERNAME", "s3gw.objectstorage.k8s.io"),
-		cosiEndpoint: envflag.String("COSI_ENDPOINT", "unix:///var/lib/cosi/cosi.sock"),
-		accessKey:    envflag.String("ACCESSKEY", ""),
-		secretKey:    envflag.String("SECRETKEY", ""),
-		rgwEndpoint:  envflag.String("ENDPOINT", ""),
+		driverName:    envflag.String("DRIVERNAME", "seaweedfs.objectstorage.k8s.io"),
+		cosiEndpoint:  envflag.String("COSI_ENDPOINT", "unix:///var/lib/cosi/cosi.sock"),
+		accessKey:     envflag.String("ACCESSKEY", ""),
+		secretKey:     envflag.String("SECRETKEY", ""),
+		filerEndpoint: envflag.String("ENDPOINT", ""),
 	}
 
 	if err := run(context.Background(), opts); err != nil {
@@ -66,8 +66,8 @@ func run(ctx context.Context, opts runOptions) error {
 
 	identityServer, provisionerServer, err := driver.NewDriver(ctx,
 		opts.driverName,
-		opts.rgwEndpoint,
-		opts.secretKey,
+		opts.filerEndpoint,
+		opts.accessKey,
 		opts.secretKey,
 	)
 	if err != nil {

@@ -1,9 +1,9 @@
 /*
 Copyright 2023 SUSE, LLC.
-Copyright 2024 s3gw contributors.
+Copyright 2024 SeaweedFS contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
-You may not use this file except in compliance with the License.
+you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
