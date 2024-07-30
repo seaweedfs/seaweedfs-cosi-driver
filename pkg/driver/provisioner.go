@@ -19,11 +19,15 @@ package driver
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"io/ioutil"
 
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 	cosispec "sigs.k8s.io/container-object-storage-interface-spec"
@@ -40,8 +44,32 @@ type provisionerServer struct {
 var _ cosispec.ProvisionerServer = &provisionerServer{}
 
 // Create a new SeaweedFS Filer client for interacting with the Filer.
-func createFilerClient(filerEndpoint, accessKey, secretKey string) (filer_pb.SeaweedFilerClient, error) {
-	conn, err := grpc.Dial(filerEndpoint, grpc.WithInsecure()) // Assuming no TLS for simplicity
+func createFilerClient(filerEndpoint, accessKey, secretKey, caCertPath, clientCertPath, clientKeyPath string) (filer_pb.SeaweedFilerClient, error) {
+	// Load the CA certificate
+	caCert, err := ioutil.ReadFile(caCertPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CA certificate: %w", err)
+	}
+
+	// Create a certificate pool from the CA certificate
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCert) {
+		return nil, fmt.Errorf("failed to append CA certificate to pool")
+	}
+
+	// Load the client certificates
+	clientCert, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load client certificates: %w", err)
+	}
+
+	// Create the credentials
+	creds := credentials.NewTLS(&tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      caCertPool,
+	})
+
+	conn, err := grpc.Dial(filerEndpoint, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to filer: %w", err)
 	}
@@ -55,9 +83,9 @@ func getFilerBucketsPath(filerClient filer_pb.SeaweedFilerClient) (string, error
 }
 
 // NewProvisionerServer returns provisioner.Server with initialized clients.
-func NewProvisionerServer(provisioner, filerEndpoint, accessKey, secretKey string) (cosispec.ProvisionerServer, error) {
+func NewProvisionerServer(provisioner, filerEndpoint, accessKey, secretKey, caCertPath, clientCertPath, clientKeyPath string) (cosispec.ProvisionerServer, error) {
 	// Create filer client here
-	filerClient, err := createFilerClient(filerEndpoint, accessKey, secretKey)
+	filerClient, err := createFilerClient(filerEndpoint, accessKey, secretKey, caCertPath, clientCertPath, clientKeyPath)
 	if err != nil {
 		return nil, err
 	}

@@ -23,8 +23,8 @@ import (
 	cosispec "sigs.k8s.io/container-object-storage-interface-spec"
 )
 
-func NewDriver(ctx context.Context, provisionerName, filerEndpoint, accessKey, secretKey string) (cosispec.IdentityServer, cosispec.ProvisionerServer, error) {
-	provisionerServer, err := NewProvisionerServer(provisionerName, filerEndpoint, accessKey, secretKey)
+func NewDriver(ctx context.Context, provisionerName, filerEndpoint, accessKey, secretKey, caCertPath, clientCertPath, clientKeyPath string) (cosispec.IdentityServer, cosispec.ProvisionerServer, error) {
+	provisionerServer, err := NewProvisionerServer(provisionerName, filerEndpoint, accessKey, secretKey, caCertPath, clientCertPath, clientKeyPath)
 	if err != nil {
 		return nil, nil, err
 	}

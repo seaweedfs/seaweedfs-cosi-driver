@@ -31,11 +31,14 @@ import (
 )
 
 type runOptions struct {
-	driverName    string
-	cosiEndpoint  string
-	accessKey     string
-	secretKey     string
-	filerEndpoint string
+	driverName     string
+	cosiEndpoint   string
+	accessKey      string
+	secretKey      string
+	filerEndpoint  string
+	caCertPath     string
+	clientCertPath string
+	clientKeyPath  string
 }
 
 func main() {
@@ -43,11 +46,14 @@ func main() {
 	flag.Parse()
 
 	opts := runOptions{
-		driverName:    envflag.String("DRIVERNAME", "seaweedfs.objectstorage.k8s.io"),
-		cosiEndpoint:  envflag.String("COSI_ENDPOINT", "unix:///var/lib/cosi/cosi.sock"),
-		accessKey:     envflag.String("ACCESSKEY", ""),
-		secretKey:     envflag.String("SECRETKEY", ""),
-		filerEndpoint: envflag.String("ENDPOINT", ""),
+		driverName:     envflag.String("DRIVERNAME", "seaweedfs.objectstorage.k8s.io"),
+		cosiEndpoint:   envflag.String("COSI_ENDPOINT", "unix:///var/lib/cosi/cosi.sock"),
+		accessKey:      envflag.String("ACCESSKEY", ""),
+		secretKey:      envflag.String("SECRETKEY", ""),
+		filerEndpoint:  envflag.String("ENDPOINT", ""),
+		caCertPath:     envflag.String("CA_CERT_PATH", ""),
+		clientCertPath: envflag.String("CLIENT_CERT_PATH", ""),
+		clientKeyPath:  envflag.String("CLIENT_KEY_PATH", ""),
 	}
 
 	if err := run(context.Background(), opts); err != nil {
@@ -69,6 +75,9 @@ func run(ctx context.Context, opts runOptions) error {
 		opts.filerEndpoint,
 		opts.accessKey,
 		opts.secretKey,
+		opts.caCertPath,
+		opts.clientCertPath,
+		opts.clientKeyPath,
 	)
 	if err != nil {
 		return err
