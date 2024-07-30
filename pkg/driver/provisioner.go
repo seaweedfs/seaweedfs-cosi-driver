@@ -328,27 +328,55 @@ func contains(slice []string, item string) bool {
 	return false
 }
 
-// DriverGrantBucketAccess call grants access to a bucket.
+// DriverGrantBucketAccess grants access to a bucket.
 func (s *provisionerServer) DriverGrantBucketAccess(
 	ctx context.Context,
 	req *cosispec.DriverGrantBucketAccessRequest,
 ) (*cosispec.DriverGrantBucketAccessResponse, error) {
-	klog.InfoS("granting bucket access", "bucket", req.GetBucketId(), "user", req.GetName())
+	userName := req.GetName()
+	bucketName := req.GetBucketId()
+	klog.V(5).Infof("req %v", req)
+	klog.Info("Granting user accessPolicy to bucket ", "userName", userName, "bucketName", bucketName)
 
-	// Implement access grant logic using SeaweedFS filer client
-	err := s.grantBucketAccess(ctx, req.GetBucketId(), req.GetName())
+	// Generate random access and secret keys
+	accessKey, err := randomHex(16)
 	if err != nil {
-		klog.ErrorS(err, "failed to grant access", "bucket", req.GetBucketId(), "user", req.GetName())
+		return nil, fmt.Errorf("failed to generate access key: %w", err)
+	}
+	secretKey, err := randomHex(32)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate secret key: %w", err)
+	}
+
+	// Update IAM configuration
+	err = s.configureS3Access(ctx, userName, accessKey, secretKey, []string{
+		fmt.Sprintf("Read:%s", bucketName),
+		fmt.Sprintf("Write:%s", bucketName),
+		fmt.Sprintf("List:%s", bucketName),
+		fmt.Sprintf("Tagging:%s", bucketName),
+	}, false)
+	if err != nil {
+		klog.ErrorS(err, "failed to configure S3 access")
+		return nil, status.Error(codes.Internal, "failed to configure S3 access")
+	}
+
+	// Create user and grant bucket access
+	err = s.grantBucketAccess(ctx, bucketName, userName)
+	if err != nil {
+		klog.ErrorS(err, "failed to grant bucket access", "bucketName", bucketName, "userName", userName)
 		return nil, status.Error(codes.Internal, "failed to grant bucket access")
 	}
 
+	// Prepare the response with generated credentials
 	credentials := map[string]string{
-		"accessKey": "exampleAccessKey",
-		"secretKey": "exampleSecretKey",
+		"accessKey": accessKey,
+		"secretKey": secretKey,
 	}
 
+	klog.InfoS("Successfully granted bucket access", "bucketName", bucketName, "userName", userName)
+
 	return &cosispec.DriverGrantBucketAccessResponse{
-		AccountId: req.GetName(),
+		AccountId: userName,
 		Credentials: map[string]*cosispec.CredentialDetails{
 			"s3": {
 				Secrets: credentials,
