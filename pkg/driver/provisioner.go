@@ -53,7 +53,7 @@ func randomHex(n int) (string, error) {
 }
 
 // Create a new SeaweedFS Filer client for interacting with the Filer.
-func createFilerClient(filerEndpoint, accessKey, secretKey string, grpcDialOption grpc.DialOption) (filer_pb.SeaweedFilerClient, error) {
+func createFilerClient(filerEndpoint string, grpcDialOption grpc.DialOption) (filer_pb.SeaweedFilerClient, error) {
 	conn, err := grpc.Dial(filerEndpoint, grpcDialOption)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to filer: %w", err)
@@ -68,9 +68,9 @@ func getFilerBucketsPath(filerClient filer_pb.SeaweedFilerClient) (string, error
 }
 
 // NewProvisionerServer returns provisioner.Server with initialized clients.
-func NewProvisionerServer(provisioner, filerEndpoint, accessKey, secretKey string, grpcDialOption grpc.DialOption) (cosispec.ProvisionerServer, error) {
+func NewProvisionerServer(provisioner, filerEndpoint string, grpcDialOption grpc.DialOption) (cosispec.ProvisionerServer, error) {
 	// Create filer client here
-	filerClient, err := createFilerClient(filerEndpoint, accessKey, secretKey, grpcDialOption)
+	filerClient, err := createFilerClient(filerEndpoint, grpcDialOption)
 	if err != nil {
 		return nil, err
 	}
