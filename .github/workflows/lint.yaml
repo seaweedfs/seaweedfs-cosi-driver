@@ -3,10 +3,10 @@ name: Lint
 on:
   pull_request:
     branches:
-      - s3gw
+      - main
   push:
     branches:
-      - s3gw
+      - main
 jobs:
   lint:
     runs-on: ubuntu-latest
