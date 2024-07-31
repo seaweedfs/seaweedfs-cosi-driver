@@ -5,8 +5,8 @@ COSI driver implementation for [SeaweedFS](https://github.com/chrislusf/seaweedf
 Note that the COSI driver alone is not sufficient to get COSI working
 on a Kubernetes cluster.
 
-You can deploy a full COSI installation for SeaweedFS following the instructions for the
-[SeaweedFS's Helm charts](https://github.com/seaweedfs/seaweedfs/tree/master/k8s/charts/seaweedfs).
+You can deploy a full COSI installation for SeaweedFS following the
+instructions for the [SeaweedFS's Helm charts](https://github.com/seaweedfs/seaweedfs/tree/master/k8s/charts/seaweedfs).
 
 ## Building
 
