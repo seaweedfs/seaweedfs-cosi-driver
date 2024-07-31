@@ -59,17 +59,17 @@ file named: `BucketInfo` containing a json:
 ```json
 {
   "metadata": {
-    "name": "bc-ceb3a749-b578-4da7-8ea3-607c40093060",
+    "name": "bc-9b55f9f1-2492-4d41-a380-09f9a32e85ed",
     "creationTimestamp": null
   },
   "spec": {
-    "bucketName": "sample-bccf98111be-2edb-402e-a95e-628e178f2818",
+    "bucketName": "sample-bcc5e103d90-f638-412a-9c5a-79e3e51fe4f0",
     "authenticationType": "KEY",
     "secretS3": {
-      "endpoint": "http://seaweedfs.seaweedfs.svc.cluster.local",
-      "region": "US",
-      "accessKeyID": "N7DFI9CCZWZ6QJXI5V1O",
-      "accessSecretKey": "2RjtQa3JqPQKVQPf2ux4v8xtdszL8bNtsfna8vV0"
+      "endpoint": "http://seaweedfs.seaweedfs.svc.cluster",
+      "region": "",
+      "accessKeyID": "3TQDWKY2JJ4W8TAQJKCG",
+      "accessSecretKey": "k2NrXAPLFMCjHtsPJCjV4QWSNzSIHDHEA8BT9xaZ"
     },
     "secretAzure": null,
     "protocols": [

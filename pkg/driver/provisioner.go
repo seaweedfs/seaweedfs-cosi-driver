@@ -159,31 +159,6 @@ func (s *provisionerServer) DriverDeleteBucket(
 	return &cosispec.DriverDeleteBucketResponse{}, nil
 }
 
-// Grant access to a bucket.
-func (s *provisionerServer) grantBucketAccess(ctx context.Context, bucketId, userId string) error {
-	accessKey, err := randomHex(16)
-	if err != nil {
-		return fmt.Errorf("failed to generate access key: %w", err)
-	}
-	secretKey, err := randomHex(32)
-	if err != nil {
-		return fmt.Errorf("failed to generate secret key: %w", err)
-	}
-
-	actions := []string{"Read", "Write", "List", "Tagging"}
-	var cmdActions []string
-	for _, action := range actions {
-		cmdActions = append(cmdActions, fmt.Sprintf("%s:%s", action, bucketId))
-	}
-
-	err = s.configureS3Access(ctx, userId, accessKey, secretKey, cmdActions, false)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // Revoke access to a bucket.
 func (s *provisionerServer) revokeBucketAccess(ctx context.Context, userId string) error {
 	err := s.configureS3Access(ctx, userId, "", "", nil, true)
@@ -314,14 +289,14 @@ func (s *provisionerServer) DriverGrantBucketAccess(
 	klog.V(5).Infof("req %v", req)
 	klog.Info("Granting user accessPolicy to bucket ", "userName", userName, "bucketName", bucketName)
 
-	// Generate random access and secret keys
-	accessKey, err := randomHex(16)
+	// Generate Access Key ID and Secret Access Key
+	accessKey, err := GenerateAccessKeyID()
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate access key: %w", err)
+		return nil, fmt.Errorf("failed to generate access key ID: %w", err)
 	}
-	secretKey, err := randomHex(32)
+	secretKey, err := GenerateSecretAccessKey()
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate secret key: %w", err)
+		return nil, fmt.Errorf("failed to generate secret access key: %w", err)
 	}
 
 	// Read current S3 configuration
@@ -431,4 +406,28 @@ func (s *provisionerServer) DriverRevokeBucketAccess(
 	}
 
 	return &cosispec.DriverRevokeBucketAccessResponse{}, nil
+}
+
+// GenerateAccessKeyID generates an Access Key ID of 20 characters long, consisting of uppercase letters and numbers.
+func GenerateAccessKeyID() (string, error) {
+	const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	return generateRandomString(20, charset)
+}
+
+// GenerateSecretAccessKey generates a Secret Access Key of 40 characters long.
+func GenerateSecretAccessKey() (string, error) {
+	const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+"
+	return generateRandomString(40, charset)
+}
+
+// generateRandomString generates a random string of the specified length from the given set of characters.
+func generateRandomString(length int, charset string) (string, error) {
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	for i := 0; i < length; i++ {
+		b[i] = charset[int(b[i])%len(charset)]
+	}
+	return string(b), nil
 }
