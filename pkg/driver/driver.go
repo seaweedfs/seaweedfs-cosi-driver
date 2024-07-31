@@ -20,11 +20,12 @@ package driver
 import (
 	"context"
 
+	"google.golang.org/grpc"
 	cosispec "sigs.k8s.io/container-object-storage-interface-spec"
 )
 
-func NewDriver(ctx context.Context, provisionerName, filerEndpoint, accessKey, secretKey, caCertPath, clientCertPath, clientKeyPath string) (cosispec.IdentityServer, cosispec.ProvisionerServer, error) {
-	provisionerServer, err := NewProvisionerServer(provisionerName, filerEndpoint, accessKey, secretKey, caCertPath, clientCertPath, clientKeyPath)
+func NewDriver(ctx context.Context, provisionerName, filerEndpoint, accessKey, secretKey string, grpcDialOption grpc.DialOption) (cosispec.IdentityServer, cosispec.ProvisionerServer, error) {
+	provisionerServer, err := NewProvisionerServer(provisionerName, filerEndpoint, accessKey, secretKey, grpcDialOption)
 	if err != nil {
 		return nil, nil, err
 	}
