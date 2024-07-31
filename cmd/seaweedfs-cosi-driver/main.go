@@ -36,6 +36,8 @@ type runOptions struct {
 	driverName    string
 	cosiEndpoint  string
 	filerEndpoint string
+	endpoint      string
+	region        string
 }
 
 func main() {
@@ -46,6 +48,8 @@ func main() {
 		driverName:    envflag.String("DRIVERNAME", "seaweedfs.objectstorage.k8s.io"),
 		cosiEndpoint:  envflag.String("COSI_ENDPOINT", "unix:///var/lib/cosi/cosi.sock"),
 		filerEndpoint: envflag.String("SEAWEEDFS_FILER", ""),
+		endpoint:      envflag.String("ENDPOINT", ""),
+		region:        envflag.String("REGION", ""),
 	}
 
 	if err := run(context.Background(), opts); err != nil {
@@ -68,6 +72,8 @@ func run(ctx context.Context, opts runOptions) error {
 	identityServer, provisionerServer, err := driver.NewDriver(ctx,
 		opts.driverName,
 		opts.filerEndpoint,
+		opts.endpoint,
+		opts.region,
 		grpcDialOption,
 	)
 	if err != nil {

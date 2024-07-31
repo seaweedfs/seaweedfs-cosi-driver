@@ -24,8 +24,8 @@ import (
 	cosispec "sigs.k8s.io/container-object-storage-interface-spec"
 )
 
-func NewDriver(ctx context.Context, provisionerName, filerEndpoint string, grpcDialOption grpc.DialOption) (cosispec.IdentityServer, cosispec.ProvisionerServer, error) {
-	provisionerServer, err := NewProvisionerServer(provisionerName, filerEndpoint, grpcDialOption)
+func NewDriver(ctx context.Context, provisionerName, filerEndpoint, endpoint, region string, grpcDialOption grpc.DialOption) (cosispec.IdentityServer, cosispec.ProvisionerServer, error) {
+	provisionerServer, err := NewProvisionerServer(provisionerName, filerEndpoint, endpoint, region, grpcDialOption)
 	if err != nil {
 		return nil, nil, err
 	}

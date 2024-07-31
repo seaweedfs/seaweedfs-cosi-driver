@@ -39,6 +39,8 @@ type provisionerServer struct {
 	provisioner      string
 	filerClient      filer_pb.SeaweedFilerClient
 	filerBucketsPath string
+	endpoint         string
+	region           string
 }
 
 // Interface guards.
@@ -68,7 +70,7 @@ func getFilerBucketsPath(filerClient filer_pb.SeaweedFilerClient) (string, error
 }
 
 // NewProvisionerServer returns provisioner.Server with initialized clients.
-func NewProvisionerServer(provisioner, filerEndpoint string, grpcDialOption grpc.DialOption) (cosispec.ProvisionerServer, error) {
+func NewProvisionerServer(provisioner, filerEndpoint, endpoint, region string, grpcDialOption grpc.DialOption) (cosispec.ProvisionerServer, error) {
 	// Create filer client here
 	filerClient, err := createFilerClient(filerEndpoint, grpcDialOption)
 	if err != nil {
@@ -85,6 +87,8 @@ func NewProvisionerServer(provisioner, filerEndpoint string, grpcDialOption grpc
 		provisioner:      provisioner,
 		filerClient:      filerClient,
 		filerBucketsPath: filerBucketsPath,
+		endpoint:         endpoint,
+		region:           region,
 	}, nil
 }
 
@@ -320,32 +324,87 @@ func (s *provisionerServer) DriverGrantBucketAccess(
 		return nil, fmt.Errorf("failed to generate secret key: %w", err)
 	}
 
-	// Update IAM configuration
-	err = s.configureS3Access(ctx, userName, accessKey, secretKey, []string{
-		fmt.Sprintf("Read:%s", bucketName),
-		fmt.Sprintf("Write:%s", bucketName),
-		fmt.Sprintf("List:%s", bucketName),
-		fmt.Sprintf("Tagging:%s", bucketName),
-	}, false)
-	if err != nil {
-		klog.ErrorS(err, "failed to configure S3 access")
-		return nil, status.Error(codes.Internal, "failed to configure S3 access")
+	// Read current S3 configuration
+	var buf bytes.Buffer
+	if err := s.readS3Configuration(ctx, &buf); err != nil {
+		return nil, status.Error(codes.Internal, "failed to read S3 configuration")
 	}
 
-	// Create user and grant bucket access
-	err = s.grantBucketAccess(ctx, bucketName, userName)
-	if err != nil {
-		klog.ErrorS(err, "failed to grant bucket access", "bucketName", bucketName, "userName", userName)
-		return nil, status.Error(codes.Internal, "failed to grant bucket access")
+	s3cfg := &iam_pb.S3ApiConfiguration{}
+	if buf.Len() > 0 {
+		if err := filer.ParseS3ConfigurationFromBytes(buf.Bytes(), s3cfg); err != nil {
+			return nil, status.Error(codes.Internal, "failed to parse S3 configuration")
+		}
 	}
 
-	// Prepare the response with generated credentials
-	credentials := map[string]string{
-		"accessKey": accessKey,
-		"secretKey": secretKey,
+	// Find or create the identity for the user
+	var identity *iam_pb.Identity
+	for _, id := range s3cfg.Identities {
+		if id.Name == userName {
+			identity = id
+			break
+		}
+	}
+	if identity == nil {
+		identity = &iam_pb.Identity{
+			Name:        userName,
+			Actions:     []string{},
+			Credentials: []*iam_pb.Credential{},
+		}
+		s3cfg.Identities = append(s3cfg.Identities, identity)
+	}
+
+	// Check if credentials already exist for the user
+	for _, cred := range identity.Credentials {
+		if cred.AccessKey == accessKey && cred.SecretKey == secretKey {
+			klog.InfoS("Credentials already exist for user", "userName", userName)
+			return &cosispec.DriverGrantBucketAccessResponse{
+				AccountId: userName,
+				Credentials: map[string]*cosispec.CredentialDetails{
+					"s3": {
+						Secrets: map[string]string{
+							"accessKeyID":     accessKey,
+							"accessSecretKey": secretKey,
+							"endpoint":        "",
+							"region":          "",
+						},
+					},
+				},
+			}, nil
+		}
+	}
+
+	// Add the new credentials to the identity
+	identity.Credentials = append(identity.Credentials, &iam_pb.Credential{
+		AccessKey: accessKey,
+		SecretKey: secretKey,
+	})
+
+	// Update actions for the identity
+	actions := []string{"Read", "Write", "List", "Tagging"}
+	for _, action := range actions {
+		fullAction := fmt.Sprintf("%s:%s", action, bucketName)
+		if !contains(identity.Actions, fullAction) {
+			identity.Actions = append(identity.Actions, fullAction)
+		}
+	}
+
+	// Save updated S3 configuration
+	buf.Reset()
+	filer.ProtoToText(&buf, s3cfg)
+	if err := s.saveS3Configuration(ctx, buf.Bytes()); err != nil {
+		return nil, status.Error(codes.Internal, "failed to save S3 configuration")
 	}
 
 	klog.InfoS("Successfully granted bucket access", "bucketName", bucketName, "userName", userName)
+
+	// Prepare the response with generated credentials
+	credentials := map[string]string{
+		"accessKeyID":     accessKey,
+		"accessSecretKey": secretKey,
+		"endpoint":        s.endpoint,
+		"region":          s.region,
+	}
 
 	return &cosispec.DriverGrantBucketAccessResponse{
 		AccountId: userName,
