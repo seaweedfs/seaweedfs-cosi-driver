@@ -253,6 +253,10 @@ func (s *provisionerServer) readS3Configuration(ctx context.Context, buf *bytes.
 		Name:      filer.IamIdentityFile,
 	})
 	if err != nil {
+		// Handle the case where the file is not found
+		if strings.HasSuffix(err.Error(), "no entry is found in filer store") {
+			return nil
+		}
 		return err
 	}
 
@@ -265,7 +269,34 @@ func (s *provisionerServer) readS3Configuration(ctx context.Context, buf *bytes.
 
 // Save the S3 configuration to the SeaweedFS Filer.
 func (s *provisionerServer) saveS3Configuration(ctx context.Context, data []byte) error {
-	_, err := s.filerClient.UpdateEntry(ctx, &filer_pb.UpdateEntryRequest{
+	// Check if the S3 configuration file exists
+	_, err := s.filerClient.LookupDirectoryEntry(ctx, &filer_pb.LookupDirectoryEntryRequest{
+		Directory: filer.IamConfigDirectory,
+		Name:      filer.IamIdentityFile,
+	})
+	if err != nil {
+		// Handle the case where the file is not found
+		if strings.HasSuffix(err.Error(), "no entry is found in filer store") {
+			// Create the S3 configuration file
+			_, createErr := s.filerClient.CreateEntry(ctx, &filer_pb.CreateEntryRequest{
+				Directory: filer.IamConfigDirectory,
+				Entry: &filer_pb.Entry{
+					Name:        filer.IamIdentityFile,
+					Content:     data,
+					IsDirectory: false,
+				},
+			})
+			if createErr != nil {
+				return fmt.Errorf("failed to create S3 configuration file: %w", createErr)
+			}
+			return nil
+		} else {
+			return fmt.Errorf("failed to check S3 configuration file: %w", err)
+		}
+	}
+
+	// Update the existing S3 configuration file
+	_, err = s.filerClient.UpdateEntry(ctx, &filer_pb.UpdateEntryRequest{
 		Directory: filer.IamConfigDirectory,
 		Entry: &filer_pb.Entry{
 			Name:        filer.IamIdentityFile,
@@ -273,7 +304,11 @@ func (s *provisionerServer) saveS3Configuration(ctx context.Context, data []byte
 			IsDirectory: false,
 		},
 	})
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to update S3 configuration: %w", err)
+	}
+
+	return nil
 }
 
 // Helper function to check if a string slice contains a string.
@@ -297,7 +332,7 @@ func (s *provisionerServer) DriverGrantBucketAccess(
 		return nil, fmt.Errorf("user name or bucket name cannot be empty")
 	}
 	klog.V(5).Infof("req %v", req)
-	klog.Info("Granting user accessPolicy to bucket ", "userName", userName, "bucketName", bucketName)
+	klog.Info("Granting user accessPolicy to bucket ", "userName ", userName, " bucketName", bucketName)
 
 	// Generate Access Key ID and Secret Access Key
 	accessKey, err := GenerateAccessKeyID()
@@ -312,13 +347,13 @@ func (s *provisionerServer) DriverGrantBucketAccess(
 	// Read current S3 configuration
 	var buf bytes.Buffer
 	if err := s.readS3Configuration(ctx, &buf); err != nil {
-		return nil, status.Error(codes.Internal, "failed to read S3 configuration")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to read S3 configuration: %s", err))
 	}
 
 	s3cfg := &iam_pb.S3ApiConfiguration{}
 	if buf.Len() > 0 {
 		if err := filer.ParseS3ConfigurationFromBytes(buf.Bytes(), s3cfg); err != nil {
-			return nil, status.Error(codes.Internal, "failed to parse S3 configuration")
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to parse S3 configuration: %s", err))
 		}
 	}
 
@@ -378,7 +413,7 @@ func (s *provisionerServer) DriverGrantBucketAccess(
 	buf.Reset()
 	filer.ProtoToText(&buf, s3cfg)
 	if err := s.saveS3Configuration(ctx, buf.Bytes()); err != nil {
-		return nil, status.Error(codes.Internal, "failed to save S3 configuration")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to save S3 configuration: %s", err))
 	}
 
 	klog.InfoS("Successfully granted bucket access", "bucketName", bucketName, "userName", userName)
@@ -417,7 +452,7 @@ func (s *provisionerServer) DriverRevokeBucketAccess(
 	err := s.revokeBucketAccess(ctx, userName)
 	if err != nil {
 		klog.ErrorS(err, "failed to revoke access", "user", userName)
-		return nil, status.Error(codes.Internal, "failed to revoke bucket access")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to revoke bucket access: %s", err))
 	}
 
 	return &cosispec.DriverRevokeBucketAccessResponse{}, nil
