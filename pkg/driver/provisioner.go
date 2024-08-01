@@ -287,6 +287,9 @@ func (s *provisionerServer) DriverGrantBucketAccess(
 ) (*cosispec.DriverGrantBucketAccessResponse, error) {
 	userName := req.GetName()
 	bucketName := req.GetBucketId()
+	if userName == "" || bucketName == "" {
+		return nil, fmt.Errorf("user name or bucket name cannot be empty")
+	}
 	klog.V(5).Infof("req %v", req)
 	klog.Info("Granting user accessPolicy to bucket ", "userName", userName, "bucketName", bucketName)
 
@@ -398,11 +401,16 @@ func (s *provisionerServer) DriverRevokeBucketAccess(
 	req *cosispec.DriverRevokeBucketAccessRequest,
 ) (*cosispec.DriverRevokeBucketAccessResponse, error) {
 	klog.InfoS("revoking bucket access", "user", req.GetAccountId())
+	userName := req.GetAccountId()
+	if userName == "" {
+		return nil, fmt.Errorf("user name cannot be empty")
+	}
+	klog.InfoS("revoking bucket access", "user", userName)
 
 	// Implement access revoke logic using SeaweedFS filer client
-	err := s.revokeBucketAccess(ctx, req.GetAccountId())
+	err := s.revokeBucketAccess(ctx, userName)
 	if err != nil {
-		klog.ErrorS(err, "failed to revoke access", "user", req.GetAccountId())
+		klog.ErrorS(err, "failed to revoke access", "user", userName)
 		return nil, status.Error(codes.Internal, "failed to revoke bucket access")
 	}
 
