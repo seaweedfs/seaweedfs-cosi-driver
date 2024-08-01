@@ -24,6 +24,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/seaweedfs/seaweedfs/weed/filer"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
@@ -164,6 +165,11 @@ func (s *provisionerServer) DriverDeleteBucket(
 func (s *provisionerServer) revokeBucketAccess(ctx context.Context, userId string) error {
 	err := s.configureS3Access(ctx, userId, "", "", nil, true)
 	if err != nil {
+		// Check if the error is because the entry was not found
+		if strings.HasSuffix(err.Error(), "no entry is found in filer store") {
+			klog.InfoS("no entry found in filer store, treating as success", "user", userId)
+			return nil
+		}
 		return err
 	}
 
