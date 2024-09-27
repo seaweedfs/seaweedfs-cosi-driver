@@ -24,7 +24,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/seaweedfs/seaweedfs/weed/filer"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
@@ -101,8 +103,14 @@ func (s *provisionerServer) createBucket(ctx context.Context, bucketName string)
 		Entry: &filer_pb.Entry{
 			Name:        bucketName,
 			IsDirectory: true,
+			Attributes: &filer_pb.FuseAttributes{
+				FileMode: uint32(0777 | os.ModeDir),
+				Crtime:   time.Now().Unix(),
+				Mtime:    time.Now().Unix(),
+			},
 		},
 	}
+
 	_, err := s.filerClient.CreateEntry(ctx, req)
 	if err != nil {
 		return fmt.Errorf("failed to create bucket in filer: %w", err)
@@ -113,8 +121,11 @@ func (s *provisionerServer) createBucket(ctx context.Context, bucketName string)
 // Delete a bucket in SeaweedFS using the Filer.
 func (s *provisionerServer) deleteBucket(ctx context.Context, bucketId string) error {
 	req := &filer_pb.DeleteEntryRequest{
-		Directory: s.filerBucketsPath,
-		Name:      bucketId,
+		Directory:            s.filerBucketsPath,
+		Name:                 bucketId,
+		IsDeleteData:         true,
+		IsRecursive:          true,
+		IgnoreRecursiveError: true,
 	}
 	_, err := s.filerClient.DeleteEntry(ctx, req)
 	if err != nil {
