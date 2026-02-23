@@ -272,6 +272,14 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 			params:     map[string]string{"objectLockEnabled": "false"},
 			wantExtKey: nil,
 		},
+		{
+			name: "retention params without objectLockEnabled",
+			params: map[string]string{
+				"objectLockRetentionMode": "COMPLIANCE",
+				"objectLockRetentionDays": "30",
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, c := range cases {

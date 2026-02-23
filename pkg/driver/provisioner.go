@@ -356,13 +356,18 @@ func (s *provisionerServer) configureS3Access(ctx context.Context, user, ak, sk 
 
 // validateObjectLockParams checks BucketClass parameters related to Object Lock.
 func validateObjectLockParams(params map[string]string) error {
-	if params["objectLockEnabled"] != "true" {
-		return nil
-	}
+	enabled := params["objectLockEnabled"] == "true"
 
 	mode := params["objectLockRetentionMode"]
 	days := params["objectLockRetentionDays"]
 	years := params["objectLockRetentionYears"]
+
+	if !enabled {
+		if mode != "" || days != "" || years != "" {
+			return fmt.Errorf("objectLockEnabled must be true when retention parameters are set")
+		}
+		return nil
+	}
 
 	if mode != "" && mode != "GOVERNANCE" && mode != "COMPLIANCE" {
 		return fmt.Errorf("objectLockRetentionMode must be GOVERNANCE or COMPLIANCE, got %q", mode)
@@ -375,14 +380,14 @@ func validateObjectLockParams(params map[string]string) error {
 	if days != "" {
 		n, err := strconv.Atoi(days)
 		if err != nil || n <= 0 {
-			return fmt.Errorf("objectLockRetentionDays must be a positive integer, got %q", days)
+			return fmt.Errorf("objectLockRetentionDays must be a positive integer (greater than 0), got %q", days)
 		}
 	}
 
 	if years != "" {
 		n, err := strconv.Atoi(years)
 		if err != nil || n <= 0 {
-			return fmt.Errorf("objectLockRetentionYears must be a positive integer, got %q", years)
+			return fmt.Errorf("objectLockRetentionYears must be a positive integer (greater than 0), got %q", years)
 		}
 	}
 
