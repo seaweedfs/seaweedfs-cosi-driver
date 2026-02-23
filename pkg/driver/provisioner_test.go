@@ -24,10 +24,12 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/seaweedfs/seaweedfs/weed/filer"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
+	"github.com/seaweedfs/seaweedfs/weed/pb/iam_pb"
 	"github.com/seaweedfs/seaweedfs/weed/s3api/s3_constants"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -121,6 +123,79 @@ func TestDriverGrantBucketAccess(t *testing.T) {
 			if resp.Credentials["s3"].Secrets["accessKeyID"] == "" ||
 				resp.Credentials["s3"].Secrets["accessSecretKey"] == "" {
 				t.Errorf("credentials missing")
+			}
+		})
+	}
+}
+
+// iamActions parses the fakeFiler IAM buffer and returns sorted actions for the given identity.
+func iamActions(t *testing.T, ff *fakeFiler, identity string) []string {
+	t.Helper()
+	cfg := &iam_pb.S3ApiConfiguration{}
+	if ff.iam.Len() > 0 {
+		if err := filer.ParseS3ConfigurationFromBytes(ff.iam.Bytes(), cfg); err != nil {
+			t.Fatalf("parse IAM config: %v", err)
+		}
+	}
+	for _, id := range cfg.Identities {
+		if id.Name == identity {
+			actions := make([]string, len(id.Actions))
+			copy(actions, id.Actions)
+			sort.Strings(actions)
+			return actions
+		}
+	}
+	t.Fatalf("identity %q not found in IAM config", identity)
+	return nil
+}
+
+func TestDriverGrantBucketAccessPolicy(t *testing.T) {
+	cases := []struct {
+		name        string
+		params      map[string]string
+		wantActions []string
+		wantErr     bool
+	}{
+		{
+			name:        "readonly access",
+			params:      map[string]string{"accessPolicy": "readonly"},
+			wantActions: []string{"List:b", "Read:b"},
+		},
+		{
+			name:        "readwrite access",
+			params:      map[string]string{"accessPolicy": "readwrite"},
+			wantActions: []string{"List:b", "Read:b", "Tagging:b", "Write:b"},
+		},
+		{
+			name:        "default access (no param)",
+			params:      nil,
+			wantActions: []string{"List:b", "Read:b", "Tagging:b", "Write:b"},
+		},
+		{
+			name:    "invalid access policy",
+			params:  map[string]string{"accessPolicy": "invalid"},
+			wantErr: true,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p, ff := newProv(t)
+			req := &cosispec.DriverGrantBucketAccessRequest{
+				BucketId:   "b",
+				Name:       "u",
+				Parameters: c.params,
+			}
+			_, err := p.DriverGrantBucketAccess(context.Background(), req)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("err=%v wantErr=%v", err, c.wantErr)
+			}
+			if c.wantErr {
+				return
+			}
+			got := iamActions(t, ff, "u")
+			if !reflect.DeepEqual(got, c.wantActions) {
+				t.Errorf("actions=%v want %v", got, c.wantActions)
 			}
 		})
 	}
