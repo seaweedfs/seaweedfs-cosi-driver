@@ -280,6 +280,37 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name:    "invalid objectLockEnabled value",
+			params:  map[string]string{"objectLockEnabled": "True"},
+			wantErr: true,
+		},
+		{
+			name: "years is zero",
+			params: map[string]string{
+				"objectLockEnabled":        "true",
+				"objectLockRetentionMode":  "COMPLIANCE",
+				"objectLockRetentionYears": "0",
+			},
+			wantErr: true,
+		},
+		{
+			name: "years is not a number",
+			params: map[string]string{
+				"objectLockEnabled":        "true",
+				"objectLockRetentionMode":  "COMPLIANCE",
+				"objectLockRetentionYears": "abc",
+			},
+			wantErr: true,
+		},
+		{
+			name: "years without mode",
+			params: map[string]string{
+				"objectLockEnabled":        "true",
+				"objectLockRetentionYears": "2",
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, c := range cases {

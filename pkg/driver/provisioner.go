@@ -356,7 +356,16 @@ func (s *provisionerServer) configureS3Access(ctx context.Context, user, ak, sk 
 
 // validateObjectLockParams checks BucketClass parameters related to Object Lock.
 func validateObjectLockParams(params map[string]string) error {
-	enabled := params["objectLockEnabled"] == "true"
+	rawEnabled := params["objectLockEnabled"]
+	var enabled bool
+	switch rawEnabled {
+	case "true":
+		enabled = true
+	case "false", "":
+		enabled = false
+	default:
+		return fmt.Errorf("objectLockEnabled must be \"true\" or \"false\", got %q", rawEnabled)
+	}
 
 	mode := params["objectLockRetentionMode"]
 	days := params["objectLockRetentionDays"]
