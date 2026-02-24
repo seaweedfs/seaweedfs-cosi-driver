@@ -19,6 +19,7 @@ repos:
     rev: v2.2.6
     hooks:
       - id: codespell
+        exclude: ^(go\.mod|go\.sum)$
 
   - repo: https://github.com/DavidAnson/markdownlint-cli2
     rev: v0.13.0
@@ -26,6 +27,6 @@ repos:
       - id: markdownlint-cli2
 
   - repo: https://github.com/golangci/golangci-lint
-    rev: v1.58.1
+    rev: v2.10.1
     hooks:
       - id: golangci-lint
