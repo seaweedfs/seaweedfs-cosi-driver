@@ -24,12 +24,14 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/seaweedfs/seaweedfs/weed/filer"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
 	"github.com/seaweedfs/seaweedfs/weed/pb/iam_pb"
+	"github.com/seaweedfs/seaweedfs/weed/s3api/s3_constants"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -98,19 +100,38 @@ func (s *provisionerServer) withFilerClient(ctx context.Context, fn func(filer_p
 /*                           bucket primitives                                */
 /* -------------------------------------------------------------------------- */
 
-func (s *provisionerServer) createBucket(ctx context.Context, name string) error {
+func (s *provisionerServer) createBucket(ctx context.Context, name string, params map[string]string) error {
 	return s.withFilerClient(ctx, func(c filer_pb.SeaweedFilerClient) error {
+		now := time.Now().Unix()
+		entry := &filer_pb.Entry{
+			Name:        name,
+			IsDirectory: true,
+			Attributes: &filer_pb.FuseAttributes{
+				FileMode: uint32(0777 | os.ModeDir),
+				Crtime:   now,
+				Mtime:    now,
+			},
+		}
+
+		if params["objectLockEnabled"] == "true" {
+			entry.Extended = map[string][]byte{
+				s3_constants.ExtVersioningKey:        []byte(s3_constants.VersioningEnabled),
+				s3_constants.ExtObjectLockEnabledKey: []byte(s3_constants.ObjectLockEnabled),
+			}
+			if mode := params["objectLockRetentionMode"]; mode != "" {
+				entry.Extended[s3_constants.ExtObjectLockDefaultModeKey] = []byte(mode)
+				if days := params["objectLockRetentionDays"]; days != "" {
+					entry.Extended[s3_constants.ExtObjectLockDefaultDaysKey] = []byte(days)
+				}
+				if years := params["objectLockRetentionYears"]; years != "" {
+					entry.Extended[s3_constants.ExtObjectLockDefaultYearsKey] = []byte(years)
+				}
+			}
+		}
+
 		_, err := c.CreateEntry(ctx, &filer_pb.CreateEntryRequest{
 			Directory: s.filerBucketsPath,
-			Entry: &filer_pb.Entry{
-				Name:        name,
-				IsDirectory: true,
-				Attributes: &filer_pb.FuseAttributes{
-					FileMode: uint32(0777 | os.ModeDir),
-					Crtime:   time.Now().Unix(),
-					Mtime:    time.Now().Unix(),
-				},
-			},
+			Entry:     entry,
 		})
 		return err
 	})
@@ -135,7 +156,11 @@ func (s *provisionerServer) deleteBucket(ctx context.Context, id string) error {
 
 func (s *provisionerServer) DriverCreateBucket(ctx context.Context, req *cosispec.DriverCreateBucketRequest) (*cosispec.DriverCreateBucketResponse, error) {
 	klog.InfoS("creating bucket", "name", req.GetName())
-	if err := s.createBucket(ctx, req.GetName()); err != nil {
+	params := req.GetParameters()
+	if err := validateObjectLockParams(params); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := s.createBucket(ctx, req.GetName(), params); err != nil {
 		klog.ErrorS(err, "create bucket failed")
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -328,6 +353,64 @@ func (s *provisionerServer) configureS3Access(ctx context.Context, user, ak, sk 
 /* -------------------------------------------------------------------------- */
 /*                               utilities                                    */
 /* -------------------------------------------------------------------------- */
+
+// validateObjectLockParams checks BucketClass parameters related to Object Lock.
+func validateObjectLockParams(params map[string]string) error {
+	rawEnabled := params["objectLockEnabled"]
+	var enabled bool
+	switch rawEnabled {
+	case "true":
+		enabled = true
+	case "false", "":
+		enabled = false
+	default:
+		return fmt.Errorf("objectLockEnabled must be \"true\" or \"false\", got %q", rawEnabled)
+	}
+
+	mode := params["objectLockRetentionMode"]
+	days := params["objectLockRetentionDays"]
+	years := params["objectLockRetentionYears"]
+
+	if !enabled {
+		if mode != "" || days != "" || years != "" {
+			return fmt.Errorf("objectLockEnabled must be true when retention parameters are set")
+		}
+		return nil
+	}
+
+	if mode != "" && mode != "GOVERNANCE" && mode != "COMPLIANCE" {
+		return fmt.Errorf("objectLockRetentionMode must be GOVERNANCE or COMPLIANCE, got %q", mode)
+	}
+
+	if days != "" && years != "" {
+		return fmt.Errorf("objectLockRetentionDays and objectLockRetentionYears are mutually exclusive")
+	}
+
+	if days != "" {
+		n, err := strconv.Atoi(days)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("objectLockRetentionDays must be a positive integer (greater than 0), got %q", days)
+		}
+	}
+
+	if years != "" {
+		n, err := strconv.Atoi(years)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("objectLockRetentionYears must be a positive integer (greater than 0), got %q", years)
+		}
+	}
+
+	hasMode := mode != ""
+	hasPeriod := days != "" || years != ""
+	if hasMode != hasPeriod {
+		if hasMode {
+			return fmt.Errorf("objectLockRetentionMode requires objectLockRetentionDays or objectLockRetentionYears")
+		}
+		return fmt.Errorf("objectLockRetentionDays/Years requires objectLockRetentionMode")
+	}
+
+	return nil
+}
 
 func contains(ss []string, s string) bool {
 	for _, v := range ss {
