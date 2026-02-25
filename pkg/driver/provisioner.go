@@ -185,6 +185,12 @@ func (s *provisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 		return nil, status.Error(codes.InvalidArgument, "user or bucket empty")
 	}
 
+	// determine IAM actions based on accessPolicy parameter
+	actions, err := actionsForPolicy(req.GetParameters()["accessPolicy"])
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	accessKey, _ := GenerateAccessKeyID()
 	secretKey, _ := GenerateSecretAccessKey()
 
@@ -213,7 +219,7 @@ func (s *provisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 		cfg.Identities = append(cfg.Identities, id)
 	}
 	id.Credentials = append(id.Credentials, &iam_pb.Credential{AccessKey: accessKey, SecretKey: secretKey})
-	for _, a := range []string{"Read", "Write", "List", "Tagging"} {
+	for _, a := range actions {
 		action := fmt.Sprintf("%s:%s", a, bucket)
 		if !contains(id.Actions, action) {
 			id.Actions = append(id.Actions, action)
@@ -410,6 +416,19 @@ func validateObjectLockParams(params map[string]string) error {
 	}
 
 	return nil
+}
+
+// actionsForPolicy returns the IAM action names for the given access policy.
+// Supported values: "readonly", "readwrite", "" (defaults to readwrite).
+func actionsForPolicy(policy string) ([]string, error) {
+	switch policy {
+	case "readonly":
+		return []string{"Read", "List"}, nil
+	case "readwrite", "":
+		return []string{"Read", "Write", "List", "Tagging"}, nil
+	default:
+		return nil, fmt.Errorf("unsupported accessPolicy %q, must be \"readonly\" or \"readwrite\"", policy)
+	}
 }
 
 func contains(ss []string, s string) bool {
