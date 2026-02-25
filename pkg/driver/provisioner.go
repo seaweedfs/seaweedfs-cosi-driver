@@ -55,6 +55,45 @@ type provisionerServer struct {
 
 var _ cosispec.ProvisionerServer = (*provisionerServer)(nil)
 
+const (
+	paramDisk        = "disk"
+	paramReplication = "replication"
+)
+
+// validReplications is the set of replication schemes documented by SeaweedFS.
+// See https://github.com/seaweedfs/seaweedfs/wiki/Replication
+var validReplications = map[string]bool{
+	"000": true, // no replication
+	"001": true, // replicate once on same rack
+	"010": true, // replicate once on different rack, same DC
+	"100": true, // replicate once on different DC
+	"200": true, // replicate twice on two other DCs
+	"110": true, // replicate once on different rack + once on different DC
+}
+
+// needsFilerConf reports whether any FilerConf-related parameters are set.
+func needsFilerConf(params map[string]string) bool {
+	return params[paramDisk] != "" || params[paramReplication] != ""
+}
+
+// validateBucketParams checks that disk and replication values are valid
+// SeaweedFS options.
+func validateBucketParams(params map[string]string) error {
+	if v := params[paramDisk]; v != "" {
+		switch v {
+		case "hdd", "ssd":
+		default:
+			return fmt.Errorf("invalid disk type %q: must be %q or %q", v, "hdd", "ssd")
+		}
+	}
+	if v := params[paramReplication]; v != "" {
+		if !validReplications[v] {
+			return fmt.Errorf("invalid replication %q: must be one of 000, 001, 010, 100, 200, 110", v)
+		}
+	}
+	return nil
+}
+
 // createFilerClient returns a fresh gRPC conn + typed client.
 func createFilerClient(ctx context.Context, ep string, opt grpc.DialOption) (*grpc.ClientConn, filer_pb.SeaweedFilerClient, error) {
 	conn, err := grpc.DialContext(ctx, ep, opt)
@@ -133,7 +172,24 @@ func (s *provisionerServer) createBucket(ctx context.Context, name string, param
 			Directory: s.filerBucketsPath,
 			Entry:     entry,
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		if !needsFilerConf(params) {
+			return nil
+		}
+		fc, err := readFilerConf(ctx, c)
+		if err != nil {
+			return err
+		}
+		if err := fc.SetLocationConf(&filer_pb.FilerConf_PathConf{
+			LocationPrefix: s.filerBucketsPath + "/" + name + "/",
+			DiskType:       params[paramDisk],
+			Replication:    params[paramReplication],
+		}); err != nil {
+			return fmt.Errorf("set location conf: %w", err)
+		}
+		return saveFilerConf(ctx, c, fc)
 	})
 }
 
@@ -146,7 +202,19 @@ func (s *provisionerServer) deleteBucket(ctx context.Context, id string) error {
 			IsRecursive:          true,
 			IgnoreRecursiveError: true,
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		fc, err := readFilerConf(ctx, c)
+		if err != nil {
+			return err
+		}
+		prefix := s.filerBucketsPath + "/" + id + "/"
+		if _, found := fc.GetLocationConf(prefix); !found {
+			return nil
+		}
+		fc.DeleteLocationConf(prefix)
+		return saveFilerConf(ctx, c, fc)
 	})
 }
 
@@ -158,6 +226,9 @@ func (s *provisionerServer) DriverCreateBucket(ctx context.Context, req *cosispe
 	klog.InfoS("creating bucket", "name", req.GetName())
 	params := req.GetParameters()
 	if err := validateObjectLockParams(params); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := validateBucketParams(params); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if err := s.createBucket(ctx, req.GetName(), params); err != nil {
@@ -258,6 +329,69 @@ func (s *provisionerServer) DriverRevokeBucketAccess(ctx context.Context, req *c
 	}
 	klog.InfoS("revoked bucket access", "user", user, "bucket", req.GetBucketId())
 	return &cosispec.DriverRevokeBucketAccessResponse{}, nil
+}
+
+/* -------------------------------------------------------------------------- */
+/*                       FilerConf read / write helpers                       */
+/* -------------------------------------------------------------------------- */
+
+// readFilerConf loads FilerConf from the filer, returning an empty conf if
+// the file does not exist yet.
+//
+// TODO: the read-modify-write cycle (readFilerConf -> modify -> saveFilerConf)
+// is not atomic. Concurrent bucket operations may overwrite each other's
+// PathConf entries. This is the same limitation as the IAM read-modify-write
+// in configureS3Access. Consider filer-side locking or optimistic concurrency
+// if concurrent bucket creation becomes a concern.
+func readFilerConf(ctx context.Context, c filer_pb.SeaweedFilerClient) (*filer.FilerConf, error) {
+	fc := filer.NewFilerConf()
+	resp, err := c.LookupDirectoryEntry(ctx, &filer_pb.LookupDirectoryEntryRequest{
+		Directory: filer.DirectoryEtcSeaweedFS,
+		Name:      filer.FilerConfName,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "no entry is found") {
+			return fc, nil
+		}
+		return nil, fmt.Errorf("read filer conf: %w", err)
+	}
+	if resp.Entry != nil && resp.Entry.Content != nil {
+		if err := fc.LoadFromBytes(resp.Entry.Content); err != nil {
+			return nil, fmt.Errorf("parse filer conf: %w", err)
+		}
+	}
+	return fc, nil
+}
+
+// saveFilerConf serialises fc and writes it back to the filer (update or
+// create, same pattern as saveS3Configuration).
+func saveFilerConf(ctx context.Context, c filer_pb.SeaweedFilerClient, fc *filer.FilerConf) error {
+	var buf bytes.Buffer
+	if err := fc.ToText(&buf); err != nil {
+		return fmt.Errorf("serialize filer conf: %w", err)
+	}
+	data := buf.Bytes()
+
+	_, err := c.UpdateEntry(ctx, &filer_pb.UpdateEntryRequest{
+		Directory: filer.DirectoryEtcSeaweedFS,
+		Entry: &filer_pb.Entry{
+			Name:        filer.FilerConfName,
+			Content:     data,
+			IsDirectory: false,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "no entry is found") {
+		return err
+	}
+	_, err = c.CreateEntry(ctx, &filer_pb.CreateEntryRequest{
+		Directory: filer.DirectoryEtcSeaweedFS,
+		Entry: &filer_pb.Entry{
+			Name:        filer.FilerConfName,
+			Content:     data,
+			IsDirectory: false,
+		},
+	})
+	return err
 }
 
 /* -------------------------------------------------------------------------- */
