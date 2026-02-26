@@ -24,6 +24,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -60,35 +61,22 @@ const (
 	paramReplication = "replication"
 )
 
-// validReplications is the set of replication schemes documented by SeaweedFS.
+// replicationPattern matches a valid SeaweedFS replication string: exactly 3 digits.
+// Each digit encodes the number of replicas at a given topology level (DC, rack, node).
 // See https://github.com/seaweedfs/seaweedfs/wiki/Replication
-var validReplications = map[string]bool{
-	"000": true, // no replication
-	"001": true, // replicate once on same rack
-	"010": true, // replicate once on different rack, same DC
-	"100": true, // replicate once on different DC
-	"200": true, // replicate twice on two other DCs
-	"110": true, // replicate once on different rack + once on different DC
-}
+var replicationPattern = regexp.MustCompile(`^\d{3}$`)
 
 // needsFilerConf reports whether any FilerConf-related parameters are set.
 func needsFilerConf(params map[string]string) bool {
 	return params[paramDisk] != "" || params[paramReplication] != ""
 }
 
-// validateBucketParams checks that disk and replication values are valid
-// SeaweedFS options.
+// validateBucketParams checks that replication value is a valid 3-digit string.
+// The disk parameter is a free-format tag accepted as-is by SeaweedFS.
 func validateBucketParams(params map[string]string) error {
-	if v := params[paramDisk]; v != "" {
-		switch v {
-		case "hdd", "ssd":
-		default:
-			return fmt.Errorf("invalid disk type %q: must be %q or %q", v, "hdd", "ssd")
-		}
-	}
 	if v := params[paramReplication]; v != "" {
-		if !validReplications[v] {
-			return fmt.Errorf("invalid replication %q: must be one of 000, 001, 010, 100, 200, 110", v)
+		if !replicationPattern.MatchString(v) {
+			return fmt.Errorf("invalid replication %q: must be exactly 3 digits", v)
 		}
 	}
 	return nil

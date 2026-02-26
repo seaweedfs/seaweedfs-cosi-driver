@@ -84,6 +84,11 @@ func (f *fakeFiler) DeleteEntry(_ context.Context, in *filer_pb.DeleteEntryReque
 	return &filer_pb.DeleteEntryResponse{}, nil
 }
 
+// iam returns the IAM config bytes stored in the fake filer.
+func (f *fakeFiler) iam() []byte {
+	return f.files[f.fileKey(filer.IamConfigDirectory, filer.IamIdentityFile)]
+}
+
 /* ------------------------- helper: real TCP gRPC server ----------------------- */
 
 func newProv(t *testing.T) (*provisionerServer, *fakeFiler) {
@@ -147,21 +152,35 @@ func TestDriverCreateBucket(t *testing.T) {
 			wantConf: true,
 		},
 		{
-			name:    "invalid disk",
-			bucket:  "bad-disk",
-			params:  map[string]string{"disk": "floppy"},
-			wantErr: true,
+			name:     "custom disk type",
+			bucket:   "custom-disk",
+			params:   map[string]string{"disk": "nvme"},
+			wantDisk: "nvme",
+			wantConf: true,
 		},
 		{
-			name:    "invalid replication",
+			name:     "replication 3-digit value",
+			bucket:   "repl-bucket2",
+			params:   map[string]string{"replication": "011"},
+			wantRepl: "011",
+			wantConf: true,
+		},
+		{
+			name:    "invalid replication non-digits",
 			bucket:  "bad-repl",
 			params:  map[string]string{"replication": "xyz"},
 			wantErr: true,
 		},
 		{
-			name:    "replication undocumented value",
+			name:    "invalid replication too short",
 			bucket:  "bad-repl2",
-			params:  map[string]string{"replication": "999"},
+			params:  map[string]string{"replication": "01"},
+			wantErr: true,
+		},
+		{
+			name:    "invalid replication too long",
+			bucket:  "bad-repl3",
+			params:  map[string]string{"replication": "0011"},
 			wantErr: true,
 		},
 	}
@@ -382,8 +401,8 @@ func TestDriverGrantBucketAccess(t *testing.T) {
 func iamActions(t *testing.T, ff *fakeFiler, identity string) []string {
 	t.Helper()
 	cfg := &iam_pb.S3ApiConfiguration{}
-	if ff.iam.Len() > 0 {
-		if err := filer.ParseS3ConfigurationFromBytes(ff.iam.Bytes(), cfg); err != nil {
+	if data := ff.iam(); len(data) > 0 {
+		if err := filer.ParseS3ConfigurationFromBytes(data, cfg); err != nil {
 			t.Fatalf("parse IAM config: %v", err)
 		}
 	}
