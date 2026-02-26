@@ -20,10 +20,10 @@ package driver
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"reflect"
 	"sort"
+	"sync"
 	"testing"
 
 	"github.com/seaweedfs/seaweedfs/weed/filer"
@@ -66,7 +66,7 @@ func (f *fakeFiler) CreateEntry(_ context.Context, in *filer_pb.CreateEntryReque
 func (f *fakeFiler) UpdateEntry(_ context.Context, in *filer_pb.UpdateEntryRequest) (*filer_pb.UpdateEntryResponse, error) {
 	key := f.fileKey(in.Directory, in.Entry.Name)
 	if _, ok := f.files[key]; !ok {
-		return nil, fmt.Errorf("no entry is found in filer store")
+		return nil, status.Error(codes.NotFound, "no entry is found in filer store")
 	}
 	f.files[key] = in.Entry.Content
 	return &filer_pb.UpdateEntryResponse{}, nil
@@ -76,7 +76,7 @@ func (f *fakeFiler) LookupDirectoryEntry(_ context.Context, in *filer_pb.LookupD
 	key := f.fileKey(in.Directory, in.Name)
 	data, ok := f.files[key]
 	if !ok {
-		return nil, fmt.Errorf("no entry is found in filer store")
+		return nil, status.Error(codes.NotFound, "no entry is found in filer store")
 	}
 	return &filer_pb.LookupDirectoryEntryResponse{Entry: &filer_pb.Entry{
 		Content:    data,
@@ -85,8 +85,13 @@ func (f *fakeFiler) LookupDirectoryEntry(_ context.Context, in *filer_pb.LookupD
 }
 
 func (f *fakeFiler) DeleteEntry(_ context.Context, in *filer_pb.DeleteEntryRequest) (*filer_pb.DeleteEntryResponse, error) {
+	if in.Directory == "/buckets" && f.buckets != nil {
+		if _, ok := f.buckets[in.Name]; !ok {
+			return nil, status.Error(codes.NotFound, "no entry is found in filer store")
+		}
+		delete(f.buckets, in.Name)
+	}
 	delete(f.files, f.fileKey(in.Directory, in.Name))
-	delete(f.buckets, in.Name)
 	return &filer_pb.DeleteEntryResponse{}, nil
 }
 
@@ -753,4 +758,140 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDriverDeleteBucketNotFound(t *testing.T) {
+	p, _ := newProv(t)
+
+	// deleting a non-existent bucket should succeed (idempotent)
+	resp, err := p.DriverDeleteBucket(context.Background(),
+		&cosispec.DriverDeleteBucketRequest{BucketId: "nonexistent"})
+	if err != nil {
+		t.Fatalf("expected no error for non-existent bucket, got %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+}
+
+func TestDriverDeleteBucketExisting(t *testing.T) {
+	p, ff := newProv(t)
+
+	// create a bucket first
+	_, err := p.DriverCreateBucket(context.Background(),
+		&cosispec.DriverCreateBucketRequest{Name: "to-delete"})
+	if err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	if _, ok := ff.buckets["to-delete"]; !ok {
+		t.Fatal("bucket not found after creation")
+	}
+
+	// delete it
+	_, err = p.DriverDeleteBucket(context.Background(),
+		&cosispec.DriverDeleteBucketRequest{BucketId: "to-delete"})
+	if err != nil {
+		t.Fatalf("delete bucket: %v", err)
+	}
+	if _, ok := ff.buckets["to-delete"]; ok {
+		t.Error("bucket still exists after deletion")
+	}
+}
+
+func TestDriverGrantBucketAccessGRPCCodes(t *testing.T) {
+	p, _ := newProv(t)
+
+	cases := []struct {
+		name     string
+		req      *cosispec.DriverGrantBucketAccessRequest
+		wantCode codes.Code
+	}{
+		{
+			name:     "empty bucket",
+			req:      &cosispec.DriverGrantBucketAccessRequest{Name: "u"},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name:     "empty user",
+			req:      &cosispec.DriverGrantBucketAccessRequest{BucketId: "b"},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name: "invalid policy",
+			req: &cosispec.DriverGrantBucketAccessRequest{
+				BucketId:   "b",
+				Name:       "u",
+				Parameters: map[string]string{"accessPolicy": "invalid"},
+			},
+			wantCode: codes.InvalidArgument,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := p.DriverGrantBucketAccess(context.Background(), c.req)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if got := status.Code(err); got != c.wantCode {
+				t.Errorf("code=%v want %v", got, c.wantCode)
+			}
+		})
+	}
+}
+
+func TestDriverRevokeBucketAccessGRPCCodes(t *testing.T) {
+	p, _ := newProv(t)
+
+	_, err := p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{})
+	if err == nil {
+		t.Fatal("expected error for empty user")
+	}
+	if got := status.Code(err); got != codes.InvalidArgument {
+		t.Errorf("code=%v want %v", got, codes.InvalidArgument)
+	}
+}
+
+func TestConcurrentGrantAccess(t *testing.T) {
+	p, ff := newProv(t)
+	const n = 10
+
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			req := &cosispec.DriverGrantBucketAccessRequest{
+				BucketId: "b",
+				Name:     "user",
+			}
+			_, errs[idx] = p.DriverGrantBucketAccess(context.Background(), req)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: %v", i, err)
+		}
+	}
+
+	// verify IAM config has exactly n credentials for "user"
+	cfg := &iam_pb.S3ApiConfiguration{}
+	if data := ff.iam(); len(data) > 0 {
+		if err := filer.ParseS3ConfigurationFromBytes(data, cfg); err != nil {
+			t.Fatalf("parse IAM config: %v", err)
+		}
+	}
+	for _, id := range cfg.Identities {
+		if id.Name == "user" {
+			if len(id.Credentials) != n {
+				t.Errorf("credentials count=%d want %d", len(id.Credentials), n)
+			}
+			return
+		}
+	}
+	t.Fatal("identity 'user' not found in IAM config")
 }

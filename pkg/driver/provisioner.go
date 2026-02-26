@@ -27,6 +27,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/seaweedfs/seaweedfs/weed/filer"
@@ -52,6 +53,7 @@ type provisionerServer struct {
 	region           string
 	filerEndpoint    string
 	grpcDialOption   grpc.DialOption
+	mu               sync.Mutex // protects IAM read-modify-write
 }
 
 var _ cosispec.ProvisionerServer = (*provisionerServer)(nil)
@@ -191,6 +193,9 @@ func (s *provisionerServer) deleteBucket(ctx context.Context, id string) error {
 			IgnoreRecursiveError: true,
 		})
 		if err != nil {
+			if isNotFoundError(err) {
+				return nil // already gone — idempotent delete
+			}
 			return err
 		}
 		fc, err := readFilerConf(ctx, c)
@@ -253,7 +258,10 @@ func (s *provisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	accessKey, _ := GenerateAccessKeyID()
 	secretKey, _ := GenerateSecretAccessKey()
 
-	// read-modify-write IAM configuration
+	// atomic read-modify-write IAM configuration
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	var cfgBuf bytes.Buffer
 	if err := s.readS3Configuration(ctx, &cfgBuf); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -392,7 +400,7 @@ func (s *provisionerServer) readS3Configuration(ctx context.Context, buf *bytes.
 			Directory: filer.IamConfigDirectory,
 			Name:      filer.IamIdentityFile,
 		})
-		if err != nil && !strings.Contains(err.Error(), "no entry is found") {
+		if err != nil && !isNotFoundError(err) {
 			return err
 		}
 		if resp != nil && resp.Entry != nil && resp.Entry.Content != nil {
@@ -412,7 +420,7 @@ func (s *provisionerServer) saveS3Configuration(ctx context.Context, data []byte
 				IsDirectory: false,
 			},
 		})
-		if err == nil || !strings.Contains(err.Error(), "no entry is found") {
+		if err == nil || !isNotFoundError(err) {
 			return err
 		}
 		_, err = c.CreateEntry(ctx, &filer_pb.CreateEntryRequest{
@@ -432,6 +440,9 @@ func (s *provisionerServer) revokeBucketAccess(ctx context.Context, user string)
 }
 
 func (s *provisionerServer) configureS3Access(ctx context.Context, user, ak, sk string, actions []string, del bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	var buf bytes.Buffer
 	if err := s.readS3Configuration(ctx, &buf); err != nil {
 		return err
@@ -481,6 +492,16 @@ func (s *provisionerServer) configureS3Access(ctx context.Context, user, ak, sk 
 /* -------------------------------------------------------------------------- */
 /*                               utilities                                    */
 /* -------------------------------------------------------------------------- */
+
+// isNotFoundError checks whether err represents a "not found" condition.
+// It first checks for a proper gRPC NotFound status code, then falls back to
+// string matching for SeaweedFS filer which returns plain error strings.
+func isNotFoundError(err error) bool {
+	if status.Code(err) == codes.NotFound {
+		return true
+	}
+	return strings.Contains(err.Error(), "no entry is found")
+}
 
 // validateObjectLockParams checks BucketClass parameters related to Object Lock.
 func validateObjectLockParams(params map[string]string) error {
