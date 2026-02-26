@@ -31,7 +31,9 @@ import (
 	"github.com/seaweedfs/seaweedfs/weed/pb/iam_pb"
 	"github.com/seaweedfs/seaweedfs/weed/s3api/s3_constants"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	cosispec "sigs.k8s.io/container-object-storage-interface-spec"
 )
 
@@ -46,6 +48,9 @@ type fakeFiler struct {
 func (f *fakeFiler) fileKey(dir, name string) string { return dir + "/" + name }
 
 func (f *fakeFiler) CreateEntry(_ context.Context, in *filer_pb.CreateEntryRequest) (*filer_pb.CreateEntryResponse, error) {
+	if f.files == nil {
+		f.files = make(map[string][]byte)
+	}
 	if in.Entry.Content != nil {
 		f.files[f.fileKey(in.Directory, in.Entry.Name)] = in.Entry.Content
 	}
@@ -81,6 +86,7 @@ func (f *fakeFiler) LookupDirectoryEntry(_ context.Context, in *filer_pb.LookupD
 
 func (f *fakeFiler) DeleteEntry(_ context.Context, in *filer_pb.DeleteEntryRequest) (*filer_pb.DeleteEntryResponse, error) {
 	delete(f.files, f.fileKey(in.Directory, in.Name))
+	delete(f.buckets, in.Name)
 	return &filer_pb.DeleteEntryResponse{}, nil
 }
 
@@ -123,7 +129,7 @@ func TestDriverCreateBucket(t *testing.T) {
 		wantDisk string
 		wantRepl string
 		wantConf bool
-		wantErr  bool
+		wantCode codes.Code // expected gRPC status code; codes.OK means no error
 	}{
 		{
 			name:   "no params",
@@ -166,22 +172,22 @@ func TestDriverCreateBucket(t *testing.T) {
 			wantConf: true,
 		},
 		{
-			name:    "invalid replication non-digits",
-			bucket:  "bad-repl",
-			params:  map[string]string{"replication": "xyz"},
-			wantErr: true,
+			name:     "invalid replication non-digits",
+			bucket:   "bad-repl",
+			params:   map[string]string{"replication": "xyz"},
+			wantCode: codes.InvalidArgument,
 		},
 		{
-			name:    "invalid replication too short",
-			bucket:  "bad-repl2",
-			params:  map[string]string{"replication": "01"},
-			wantErr: true,
+			name:     "invalid replication too short",
+			bucket:   "bad-repl2",
+			params:   map[string]string{"replication": "01"},
+			wantCode: codes.InvalidArgument,
 		},
 		{
-			name:    "invalid replication too long",
-			bucket:  "bad-repl3",
-			params:  map[string]string{"replication": "0011"},
-			wantErr: true,
+			name:     "invalid replication too long",
+			bucket:   "bad-repl3",
+			params:   map[string]string{"replication": "0011"},
+			wantCode: codes.InvalidArgument,
 		},
 	}
 
@@ -193,9 +199,12 @@ func TestDriverCreateBucket(t *testing.T) {
 				Name:       c.bucket,
 				Parameters: c.params,
 			})
-			if c.wantErr {
+			if c.wantCode != codes.OK {
 				if err == nil {
 					t.Fatal("expected error, got nil")
+				}
+				if got := status.Code(err); got != c.wantCode {
+					t.Fatalf("status code=%v want %v", got, c.wantCode)
 				}
 				return
 			}
@@ -368,23 +377,29 @@ func TestDriverGrantBucketAccess(t *testing.T) {
 	p, _ := newProv(t)
 
 	cases := []struct {
-		name    string
-		req     *cosispec.DriverGrantBucketAccessRequest
-		wantErr bool
+		name     string
+		req      *cosispec.DriverGrantBucketAccessRequest
+		wantCode codes.Code
 	}{
-		{"empty bucket", &cosispec.DriverGrantBucketAccessRequest{Name: "u"}, true},
-		{"empty user", &cosispec.DriverGrantBucketAccessRequest{BucketId: "b"}, true},
-		{"ok", &cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u"}, false},
+		{"empty bucket", &cosispec.DriverGrantBucketAccessRequest{Name: "u"}, codes.InvalidArgument},
+		{"empty user", &cosispec.DriverGrantBucketAccessRequest{BucketId: "b"}, codes.InvalidArgument},
+		{"ok", &cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u"}, codes.OK},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			resp, err := p.DriverGrantBucketAccess(context.Background(), c.req)
-			if (err != nil) != c.wantErr {
-				t.Fatalf("err=%v wantErr=%v", err, c.wantErr)
-			}
-			if c.wantErr {
+			if c.wantCode != codes.OK {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if got := status.Code(err); got != c.wantCode {
+					t.Fatalf("status code=%v want %v", got, c.wantCode)
+				}
 				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
 			if resp.AccountId != "u" {
 				t.Errorf("AccountId=%s want u", resp.AccountId)
@@ -423,7 +438,7 @@ func TestDriverGrantBucketAccessPolicy(t *testing.T) {
 		name        string
 		params      map[string]string
 		wantActions []string
-		wantErr     bool
+		wantCode    codes.Code
 	}{
 		{
 			name:        "readonly access",
@@ -441,9 +456,9 @@ func TestDriverGrantBucketAccessPolicy(t *testing.T) {
 			wantActions: []string{"List:b", "Read:b", "Tagging:b", "Write:b"},
 		},
 		{
-			name:    "invalid access policy",
-			params:  map[string]string{"accessPolicy": "invalid"},
-			wantErr: true,
+			name:     "invalid access policy",
+			params:   map[string]string{"accessPolicy": "invalid"},
+			wantCode: codes.InvalidArgument,
 		},
 	}
 
@@ -456,11 +471,17 @@ func TestDriverGrantBucketAccessPolicy(t *testing.T) {
 				Parameters: c.params,
 			}
 			_, err := p.DriverGrantBucketAccess(context.Background(), req)
-			if (err != nil) != c.wantErr {
-				t.Fatalf("err=%v wantErr=%v", err, c.wantErr)
-			}
-			if c.wantErr {
+			if c.wantCode != codes.OK {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if got := status.Code(err); got != c.wantCode {
+					t.Fatalf("status code=%v want %v", got, c.wantCode)
+				}
 				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
 			got := iamActions(t, ff, "u")
 			if !reflect.DeepEqual(got, c.wantActions) {
@@ -476,21 +497,30 @@ func TestDriverRevokeBucketAccess(t *testing.T) {
 		&cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u"})
 
 	cases := []struct {
-		name    string
-		req     *cosispec.DriverRevokeBucketAccessRequest
-		wantErr bool
+		name     string
+		req      *cosispec.DriverRevokeBucketAccessRequest
+		wantCode codes.Code
 	}{
-		{"empty user", &cosispec.DriverRevokeBucketAccessRequest{}, true},
-		{"ok", &cosispec.DriverRevokeBucketAccessRequest{AccountId: "u"}, false},
+		{"empty user", &cosispec.DriverRevokeBucketAccessRequest{}, codes.InvalidArgument},
+		{"ok", &cosispec.DriverRevokeBucketAccessRequest{AccountId: "u"}, codes.OK},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got, err := p.DriverRevokeBucketAccess(context.Background(), c.req)
-			if (err != nil) != c.wantErr {
-				t.Fatalf("err=%v wantErr=%v", err, c.wantErr)
+			if c.wantCode != codes.OK {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if gotCode := status.Code(err); gotCode != c.wantCode {
+					t.Fatalf("status code=%v want %v", gotCode, c.wantCode)
+				}
+				return
 			}
-			if !c.wantErr && !reflect.DeepEqual(got, &cosispec.DriverRevokeBucketAccessResponse{}) {
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(got, &cosispec.DriverRevokeBucketAccessResponse{}) {
 				t.Errorf("unexpected resp=%+v", got)
 			}
 		})
@@ -514,7 +544,7 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 	cases := []struct {
 		name       string
 		params     map[string]string
-		wantErr    bool
+		wantCode   codes.Code
 		wantExtKey []string // expected Extended keys
 	}{
 		{
@@ -565,7 +595,7 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 				"objectLockRetentionMode": "INVALID",
 				"objectLockRetentionDays": "10",
 			},
-			wantErr: true,
+			wantCode: codes.InvalidArgument,
 		},
 		{
 			name: "days and years both set",
@@ -575,7 +605,7 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 				"objectLockRetentionDays":  "30",
 				"objectLockRetentionYears": "1",
 			},
-			wantErr: true,
+			wantCode: codes.InvalidArgument,
 		},
 		{
 			name: "mode without period",
@@ -583,7 +613,7 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 				"objectLockEnabled":       "true",
 				"objectLockRetentionMode": "GOVERNANCE",
 			},
-			wantErr: true,
+			wantCode: codes.InvalidArgument,
 		},
 		{
 			name: "days without mode",
@@ -591,7 +621,7 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 				"objectLockEnabled":       "true",
 				"objectLockRetentionDays": "30",
 			},
-			wantErr: true,
+			wantCode: codes.InvalidArgument,
 		},
 		{
 			name: "days is zero",
@@ -600,7 +630,7 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 				"objectLockRetentionMode": "COMPLIANCE",
 				"objectLockRetentionDays": "0",
 			},
-			wantErr: true,
+			wantCode: codes.InvalidArgument,
 		},
 		{
 			name: "days is not a number",
@@ -609,7 +639,7 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 				"objectLockRetentionMode": "COMPLIANCE",
 				"objectLockRetentionDays": "abc",
 			},
-			wantErr: true,
+			wantCode: codes.InvalidArgument,
 		},
 		{
 			name:       "objectLockEnabled=false treated as plain bucket",
@@ -622,12 +652,12 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 				"objectLockRetentionMode": "COMPLIANCE",
 				"objectLockRetentionDays": "30",
 			},
-			wantErr: true,
+			wantCode: codes.InvalidArgument,
 		},
 		{
 			name:    "invalid objectLockEnabled value",
 			params:  map[string]string{"objectLockEnabled": "True"},
-			wantErr: true,
+			wantCode: codes.InvalidArgument,
 		},
 		{
 			name: "years is zero",
@@ -636,7 +666,7 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 				"objectLockRetentionMode":  "COMPLIANCE",
 				"objectLockRetentionYears": "0",
 			},
-			wantErr: true,
+			wantCode: codes.InvalidArgument,
 		},
 		{
 			name: "years is not a number",
@@ -645,7 +675,7 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 				"objectLockRetentionMode":  "COMPLIANCE",
 				"objectLockRetentionYears": "abc",
 			},
-			wantErr: true,
+			wantCode: codes.InvalidArgument,
 		},
 		{
 			name: "years without mode",
@@ -653,7 +683,7 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 				"objectLockEnabled":        "true",
 				"objectLockRetentionYears": "2",
 			},
-			wantErr: true,
+			wantCode: codes.InvalidArgument,
 		},
 	}
 
@@ -665,11 +695,17 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 				Parameters: c.params,
 			}
 			_, err := p.DriverCreateBucket(context.Background(), req)
-			if (err != nil) != c.wantErr {
-				t.Fatalf("err=%v wantErr=%v", err, c.wantErr)
-			}
-			if c.wantErr {
+			if c.wantCode != codes.OK {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if got := status.Code(err); got != c.wantCode {
+					t.Fatalf("status code=%v want %v", got, c.wantCode)
+				}
 				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
 
 			ext := bucketExtended(t, ff, "test-bucket")
