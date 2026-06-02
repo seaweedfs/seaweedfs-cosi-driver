@@ -24,3 +24,6 @@ go.work
 # Editor configurations
 .idea/
 .vscode/
+
+# locally-built driver binary (go build ./cmd/...)
+/seaweedfs-cosi-driver
