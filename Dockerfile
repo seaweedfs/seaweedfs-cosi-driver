@@ -3,7 +3,7 @@
 #########################################################################################
 
 # First stage: building the driver executable.
-FROM docker.io/library/golang:1.24.5 as builder
+FROM docker.io/library/golang:1.26.6 as builder
 
 # Set the working directory.
 WORKDIR /work
