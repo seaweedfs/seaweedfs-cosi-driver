@@ -15,6 +15,13 @@ jobs:
       - name: Set up Git repository
         uses: actions/checkout@v3
 
+      # The golangci-lint pre-commit hook is built from source with the Go on
+      # PATH, and refuses to lint a module targeting a newer Go than that.
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
       - name: Set up Python
         uses: actions/setup-python@v3
 
