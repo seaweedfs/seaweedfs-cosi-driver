@@ -532,6 +532,18 @@ func TestDriverRevokeBucketAccess(t *testing.T) {
 	}
 }
 
+func TestDriverRevokeBucketAccess_NonexistentUser(t *testing.T) {
+	p, ff := newProv(t)
+
+	if _, err := p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{AccountId: "ghost"}); err != nil {
+		t.Fatalf("revoke of missing user: %v", err)
+	}
+	if data := ff.iam(); len(data) != 0 {
+		t.Fatalf("identity.json recreated by revoke: %s", data)
+	}
+}
+
 // bucketExtended returns the Extended map from a stored bucket entry.
 func bucketExtended(t *testing.T, ff *fakeFiler, name string) map[string][]byte {
 	t.Helper()

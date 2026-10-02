@@ -465,9 +465,12 @@ func (s *provisionerServer) configureS3Access(ctx context.Context, user, ak, sk 
 	}
 
 	if del {
-		if idx >= 0 {
-			cfg.Identities = append(cfg.Identities[:idx], cfg.Identities[idx+1:]...)
+		if idx < 0 {
+			// Nothing removed — do not recreate a legacy identity.json that
+			// the filer already migrated away.
+			return nil
 		}
+		cfg.Identities = append(cfg.Identities[:idx], cfg.Identities[idx+1:]...)
 	} else {
 		if idx == -1 {
 			cfg.Identities = append(cfg.Identities, &iam_pb.Identity{Name: user})
