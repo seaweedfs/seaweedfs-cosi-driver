@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -436,6 +437,27 @@ func (s *provisionerServer) saveS3Configuration(ctx context.Context, data []byte
 }
 
 func (s *provisionerServer) revokeBucketAccess(ctx context.Context, user string) error {
+	// Newer filers keep one file per identity under /etc/iam/identities/ and
+	// migrate identity.json away on write, so the legacy read-modify-write
+	// below cannot remove them — delete the per-identity file directly.
+	err := s.withFilerClient(ctx, func(c filer_pb.SeaweedFilerClient) error {
+		resp, err := c.DeleteEntry(ctx, &filer_pb.DeleteEntryRequest{
+			Directory: filer.IamConfigDirectory + "/identities",
+			Name:      user + ".json",
+		})
+		if err != nil {
+			return err
+		}
+		if resp.Error != "" && !strings.Contains(resp.Error, filer_pb.ErrNotFound.Error()) {
+			return errors.New(resp.Error)
+		}
+		return nil
+	})
+	if err != nil && !isNotFoundError(err) {
+		return err
+	}
+	// Reconcile the legacy single-file config too: an identity.json that was
+	// never migrated may still carry the user.
 	return s.configureS3Access(ctx, user, "", "", nil, true)
 }
 

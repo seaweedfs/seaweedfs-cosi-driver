@@ -20,6 +20,7 @@ package driver
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"reflect"
 	"sort"
@@ -529,6 +530,100 @@ func TestDriverRevokeBucketAccess(t *testing.T) {
 				t.Errorf("unexpected resp=%+v", got)
 			}
 		})
+	}
+}
+
+func TestDriverRevokeBucketAccess_RemovesLegacyIdentity(t *testing.T) {
+	p, ff := newProv(t)
+	_, err := p.DriverGrantBucketAccess(context.Background(),
+		&cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u"})
+	if err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if len(ff.iam()) == 0 {
+		t.Fatal("identity.json not written by grant")
+	}
+
+	if _, err = p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{AccountId: "u"}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	cfg := &iam_pb.S3ApiConfiguration{}
+	if data := ff.iam(); len(data) > 0 {
+		if err := filer.ParseS3ConfigurationFromBytes(data, cfg); err != nil {
+			t.Fatalf("parse IAM config: %v", err)
+		}
+	}
+	for _, id := range cfg.Identities {
+		if id.Name == "u" {
+			t.Fatal("identity u still present in identity.json after revoke")
+		}
+	}
+}
+
+func TestDriverRevokeBucketAccess_RemovesPerIdentityFile(t *testing.T) {
+	p, ff := newProv(t)
+
+	// Simulate a migrated filer: identity.json was moved aside and each
+	// identity lives in /etc/iam/identities/<name>.json.
+	key := filer.IamConfigDirectory + "/identities/u.json"
+	data, err := json.Marshal(&iam_pb.Identity{
+		Name: "u",
+		Credentials: []*iam_pb.Credential{
+			{AccessKey: "ak", SecretKey: "sk"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal identity: %v", err)
+	}
+	ff.files[key] = data
+
+	if _, err = p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{AccountId: "u"}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if _, ok := ff.files[key]; ok {
+		t.Fatal("per-identity file still present after revoke")
+	}
+	// revoke must not recreate the legacy file the filer migrated away
+	if data := ff.iam(); len(data) != 0 {
+		t.Fatalf("identity.json recreated by revoke: %s", data)
+	}
+}
+
+func TestDriverRevokeBucketAccess_RemovesFromBothLayouts(t *testing.T) {
+	p, ff := newProv(t)
+	_, err := p.DriverGrantBucketAccess(context.Background(),
+		&cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u"})
+	if err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	key := filer.IamConfigDirectory + "/identities/u.json"
+	data, err := json.Marshal(&iam_pb.Identity{Name: "u"})
+	if err != nil {
+		t.Fatalf("marshal identity: %v", err)
+	}
+	ff.files[key] = data
+
+	if _, err = p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{AccountId: "u"}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if _, ok := ff.files[key]; ok {
+		t.Fatal("per-identity file still present after revoke")
+	}
+	cfg := &iam_pb.S3ApiConfiguration{}
+	if d := ff.iam(); len(d) > 0 {
+		if err := filer.ParseS3ConfigurationFromBytes(d, cfg); err != nil {
+			t.Fatalf("parse IAM config: %v", err)
+		}
+	}
+	for _, id := range cfg.Identities {
+		if id.Name == "u" {
+			t.Fatal("identity u still present in identity.json after revoke")
+		}
 	}
 }
 
