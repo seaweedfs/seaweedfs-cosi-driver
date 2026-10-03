@@ -86,13 +86,19 @@ func (f *fakeFiler) LookupDirectoryEntry(_ context.Context, in *filer_pb.LookupD
 }
 
 func (f *fakeFiler) DeleteEntry(_ context.Context, in *filer_pb.DeleteEntryRequest) (*filer_pb.DeleteEntryResponse, error) {
-	if in.Directory == "/buckets" && f.buckets != nil {
+	key := f.fileKey(in.Directory, in.Name)
+	if in.Directory == "/buckets" {
 		if _, ok := f.buckets[in.Name]; !ok {
 			return nil, status.Error(codes.NotFound, "no entry is found in filer store")
 		}
 		delete(f.buckets, in.Name)
+		delete(f.files, key)
+		return &filer_pb.DeleteEntryResponse{}, nil
 	}
-	delete(f.files, f.fileKey(in.Directory, in.Name))
+	if _, ok := f.files[key]; !ok {
+		return &filer_pb.DeleteEntryResponse{Error: filer_pb.ErrNotFound.Error()}, nil
+	}
+	delete(f.files, key)
 	return &filer_pb.DeleteEntryResponse{}, nil
 }
 
@@ -389,6 +395,7 @@ func TestDriverGrantBucketAccess(t *testing.T) {
 	}{
 		{"empty bucket", &cosispec.DriverGrantBucketAccessRequest{Name: "u"}, codes.InvalidArgument},
 		{"empty user", &cosispec.DriverGrantBucketAccessRequest{BucketId: "b"}, codes.InvalidArgument},
+		{"user with path separator", &cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "../identity"}, codes.InvalidArgument},
 		{"ok", &cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u"}, codes.OK},
 	}
 
@@ -508,6 +515,7 @@ func TestDriverRevokeBucketAccess(t *testing.T) {
 		wantCode codes.Code
 	}{
 		{"empty user", &cosispec.DriverRevokeBucketAccessRequest{}, codes.InvalidArgument},
+		{"user with path separator", &cosispec.DriverRevokeBucketAccessRequest{AccountId: "../identity"}, codes.InvalidArgument},
 		{"ok", &cosispec.DriverRevokeBucketAccessRequest{AccountId: "u"}, codes.OK},
 	}
 
@@ -767,8 +775,8 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 			wantCode: codes.InvalidArgument,
 		},
 		{
-			name:    "invalid objectLockEnabled value",
-			params:  map[string]string{"objectLockEnabled": "True"},
+			name:     "invalid objectLockEnabled value",
+			params:   map[string]string{"objectLockEnabled": "True"},
 			wantCode: codes.InvalidArgument,
 		},
 		{
