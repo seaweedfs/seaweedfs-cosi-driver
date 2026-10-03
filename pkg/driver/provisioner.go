@@ -439,10 +439,9 @@ func (s *provisionerServer) saveS3Configuration(ctx context.Context, data []byte
 func (s *provisionerServer) revokeBucketAccess(ctx context.Context, user string) error {
 	// Reconcile the legacy single-file config first: an identity.json that was
 	// never migrated may still carry the user, and a gateway reload between
-	// the two writes could migrate it back into the per-identity file.
-	if err := s.configureS3Access(ctx, user, "", "", nil, true); err != nil {
-		return err
-	}
+	// the two writes could migrate it back into the per-identity file. Keep
+	// going on error so the per-identity file is still deleted.
+	legacyErr := s.configureS3Access(ctx, user, "", "", nil, true)
 	// Newer filers keep one file per identity under /etc/iam/identities/ and
 	// migrate identity.json away on write, so the legacy read-modify-write
 	// above cannot remove them — delete the per-identity file directly.
@@ -459,10 +458,10 @@ func (s *provisionerServer) revokeBucketAccess(ctx context.Context, user string)
 		}
 		return nil
 	})
-	if err != nil && !isNotFoundError(err) {
-		return err
+	if err != nil && isNotFoundError(err) {
+		err = nil
 	}
-	return nil
+	return errors.Join(legacyErr, err)
 }
 
 func (s *provisionerServer) configureS3Access(ctx context.Context, user, ak, sk string, actions []string, del bool) error {

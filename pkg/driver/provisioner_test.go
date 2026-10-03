@@ -635,6 +635,24 @@ func TestDriverRevokeBucketAccess_RemovesFromBothLayouts(t *testing.T) {
 	}
 }
 
+func TestDriverRevokeBucketAccess_LegacyErrorStillDeletesFile(t *testing.T) {
+	p, ff := newProv(t)
+
+	key := filer.IamConfigDirectory + "/identities/u.json"
+	ff.files[key] = []byte("{}")
+	// A corrupt legacy identity.json fails the legacy reconcile, but the
+	// per-identity file must still be deleted and the error reported.
+	ff.files[ff.fileKey(filer.IamConfigDirectory, filer.IamIdentityFile)] = []byte("not valid config")
+
+	if _, err := p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{AccountId: "u"}); err == nil {
+		t.Fatal("expected revoke to report the legacy failure")
+	}
+	if _, ok := ff.files[key]; ok {
+		t.Fatal("per-identity file still present after revoke")
+	}
+}
+
 func TestDriverRevokeBucketAccess_NonexistentUser(t *testing.T) {
 	p, ff := newProv(t)
 
