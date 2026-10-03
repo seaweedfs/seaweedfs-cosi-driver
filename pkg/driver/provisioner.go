@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -245,8 +246,8 @@ func (s *provisionerServer) DriverDeleteBucket(ctx context.Context, req *cosispe
 func (s *provisionerServer) DriverGrantBucketAccess(ctx context.Context, req *cosispec.DriverGrantBucketAccessRequest) (*cosispec.DriverGrantBucketAccessResponse, error) {
 	klog.InfoS("granting bucket access", "user", req.GetName(), "bucket", req.GetBucketId())
 	user, bucket := req.GetName(), req.GetBucketId()
-	if user == "" || bucket == "" {
-		return nil, status.Error(codes.InvalidArgument, "user or bucket empty")
+	if user == "" || strings.Contains(user, "/") || bucket == "" {
+		return nil, status.Error(codes.InvalidArgument, "invalid user or bucket name")
 	}
 
 	// determine IAM actions based on accessPolicy parameter
@@ -317,8 +318,8 @@ func (s *provisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 func (s *provisionerServer) DriverRevokeBucketAccess(ctx context.Context, req *cosispec.DriverRevokeBucketAccessRequest) (*cosispec.DriverRevokeBucketAccessResponse, error) {
 	klog.InfoS("revoking bucket access", "user", req.GetAccountId(), "bucket", req.GetBucketId())
 	user := req.GetAccountId()
-	if user == "" {
-		return nil, status.Error(codes.InvalidArgument, "user empty")
+	if user == "" || strings.Contains(user, "/") {
+		return nil, status.Error(codes.InvalidArgument, "invalid user name")
 	}
 	if err := s.revokeBucketAccess(ctx, user); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -436,7 +437,31 @@ func (s *provisionerServer) saveS3Configuration(ctx context.Context, data []byte
 }
 
 func (s *provisionerServer) revokeBucketAccess(ctx context.Context, user string) error {
-	return s.configureS3Access(ctx, user, "", "", nil, true)
+	// Reconcile the legacy single-file config first: an identity.json that was
+	// never migrated may still carry the user, and a gateway reload between
+	// the two writes could migrate it back into the per-identity file. Keep
+	// going on error so the per-identity file is still deleted.
+	legacyErr := s.configureS3Access(ctx, user, "", "", nil, true)
+	// Newer filers keep one file per identity under /etc/iam/identities/ and
+	// migrate identity.json away on write, so the legacy read-modify-write
+	// above cannot remove them — delete the per-identity file directly.
+	err := s.withFilerClient(ctx, func(c filer_pb.SeaweedFilerClient) error {
+		resp, err := c.DeleteEntry(ctx, &filer_pb.DeleteEntryRequest{
+			Directory: filer.IamConfigDirectory + "/identities",
+			Name:      user + ".json",
+		})
+		if err != nil {
+			return err
+		}
+		if resp.Error != "" && !strings.Contains(resp.Error, filer_pb.ErrNotFound.Error()) {
+			return errors.New(resp.Error)
+		}
+		return nil
+	})
+	if err != nil && isNotFoundError(err) {
+		err = nil
+	}
+	return errors.Join(legacyErr, err)
 }
 
 func (s *provisionerServer) configureS3Access(ctx context.Context, user, ak, sk string, actions []string, del bool) error {
@@ -465,9 +490,12 @@ func (s *provisionerServer) configureS3Access(ctx context.Context, user, ak, sk 
 	}
 
 	if del {
-		if idx >= 0 {
-			cfg.Identities = append(cfg.Identities[:idx], cfg.Identities[idx+1:]...)
+		if idx < 0 {
+			// Nothing removed — do not recreate a legacy identity.json that
+			// the filer already migrated away.
+			return nil
 		}
+		cfg.Identities = append(cfg.Identities[:idx], cfg.Identities[idx+1:]...)
 	} else {
 		if idx == -1 {
 			cfg.Identities = append(cfg.Identities, &iam_pb.Identity{Name: user})

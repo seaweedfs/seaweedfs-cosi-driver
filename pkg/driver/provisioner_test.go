@@ -20,6 +20,7 @@ package driver
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"reflect"
 	"sort"
@@ -85,13 +86,19 @@ func (f *fakeFiler) LookupDirectoryEntry(_ context.Context, in *filer_pb.LookupD
 }
 
 func (f *fakeFiler) DeleteEntry(_ context.Context, in *filer_pb.DeleteEntryRequest) (*filer_pb.DeleteEntryResponse, error) {
-	if in.Directory == "/buckets" && f.buckets != nil {
+	key := f.fileKey(in.Directory, in.Name)
+	if in.Directory == "/buckets" {
 		if _, ok := f.buckets[in.Name]; !ok {
 			return nil, status.Error(codes.NotFound, "no entry is found in filer store")
 		}
 		delete(f.buckets, in.Name)
+		delete(f.files, key)
+		return &filer_pb.DeleteEntryResponse{}, nil
 	}
-	delete(f.files, f.fileKey(in.Directory, in.Name))
+	if _, ok := f.files[key]; !ok {
+		return &filer_pb.DeleteEntryResponse{Error: filer_pb.ErrNotFound.Error()}, nil
+	}
+	delete(f.files, key)
 	return &filer_pb.DeleteEntryResponse{}, nil
 }
 
@@ -388,6 +395,7 @@ func TestDriverGrantBucketAccess(t *testing.T) {
 	}{
 		{"empty bucket", &cosispec.DriverGrantBucketAccessRequest{Name: "u"}, codes.InvalidArgument},
 		{"empty user", &cosispec.DriverGrantBucketAccessRequest{BucketId: "b"}, codes.InvalidArgument},
+		{"user with path separator", &cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "../identity"}, codes.InvalidArgument},
 		{"ok", &cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u"}, codes.OK},
 	}
 
@@ -507,6 +515,7 @@ func TestDriverRevokeBucketAccess(t *testing.T) {
 		wantCode codes.Code
 	}{
 		{"empty user", &cosispec.DriverRevokeBucketAccessRequest{}, codes.InvalidArgument},
+		{"user with path separator", &cosispec.DriverRevokeBucketAccessRequest{AccountId: "../identity"}, codes.InvalidArgument},
 		{"ok", &cosispec.DriverRevokeBucketAccessRequest{AccountId: "u"}, codes.OK},
 	}
 
@@ -529,6 +538,130 @@ func TestDriverRevokeBucketAccess(t *testing.T) {
 				t.Errorf("unexpected resp=%+v", got)
 			}
 		})
+	}
+}
+
+func TestDriverRevokeBucketAccess_RemovesLegacyIdentity(t *testing.T) {
+	p, ff := newProv(t)
+	_, err := p.DriverGrantBucketAccess(context.Background(),
+		&cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u"})
+	if err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if len(ff.iam()) == 0 {
+		t.Fatal("identity.json not written by grant")
+	}
+
+	if _, err = p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{AccountId: "u"}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	cfg := &iam_pb.S3ApiConfiguration{}
+	if data := ff.iam(); len(data) > 0 {
+		if err := filer.ParseS3ConfigurationFromBytes(data, cfg); err != nil {
+			t.Fatalf("parse IAM config: %v", err)
+		}
+	}
+	for _, id := range cfg.Identities {
+		if id.Name == "u" {
+			t.Fatal("identity u still present in identity.json after revoke")
+		}
+	}
+}
+
+func TestDriverRevokeBucketAccess_RemovesPerIdentityFile(t *testing.T) {
+	p, ff := newProv(t)
+
+	// Simulate a migrated filer: identity.json was moved aside and each
+	// identity lives in /etc/iam/identities/<name>.json.
+	key := filer.IamConfigDirectory + "/identities/u.json"
+	data, err := json.Marshal(&iam_pb.Identity{
+		Name: "u",
+		Credentials: []*iam_pb.Credential{
+			{AccessKey: "ak", SecretKey: "sk"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal identity: %v", err)
+	}
+	ff.files[key] = data
+
+	if _, err = p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{AccountId: "u"}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if _, ok := ff.files[key]; ok {
+		t.Fatal("per-identity file still present after revoke")
+	}
+	// revoke must not recreate the legacy file the filer migrated away
+	if data := ff.iam(); len(data) != 0 {
+		t.Fatalf("identity.json recreated by revoke: %s", data)
+	}
+}
+
+func TestDriverRevokeBucketAccess_RemovesFromBothLayouts(t *testing.T) {
+	p, ff := newProv(t)
+	_, err := p.DriverGrantBucketAccess(context.Background(),
+		&cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u"})
+	if err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	key := filer.IamConfigDirectory + "/identities/u.json"
+	data, err := json.Marshal(&iam_pb.Identity{Name: "u"})
+	if err != nil {
+		t.Fatalf("marshal identity: %v", err)
+	}
+	ff.files[key] = data
+
+	if _, err = p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{AccountId: "u"}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if _, ok := ff.files[key]; ok {
+		t.Fatal("per-identity file still present after revoke")
+	}
+	cfg := &iam_pb.S3ApiConfiguration{}
+	if d := ff.iam(); len(d) > 0 {
+		if err := filer.ParseS3ConfigurationFromBytes(d, cfg); err != nil {
+			t.Fatalf("parse IAM config: %v", err)
+		}
+	}
+	for _, id := range cfg.Identities {
+		if id.Name == "u" {
+			t.Fatal("identity u still present in identity.json after revoke")
+		}
+	}
+}
+
+func TestDriverRevokeBucketAccess_LegacyErrorStillDeletesFile(t *testing.T) {
+	p, ff := newProv(t)
+
+	key := filer.IamConfigDirectory + "/identities/u.json"
+	ff.files[key] = []byte("{}")
+	// A corrupt legacy identity.json fails the legacy reconcile, but the
+	// per-identity file must still be deleted and the error reported.
+	ff.files[ff.fileKey(filer.IamConfigDirectory, filer.IamIdentityFile)] = []byte("not valid config")
+
+	if _, err := p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{AccountId: "u"}); err == nil {
+		t.Fatal("expected revoke to report the legacy failure")
+	}
+	if _, ok := ff.files[key]; ok {
+		t.Fatal("per-identity file still present after revoke")
+	}
+}
+
+func TestDriverRevokeBucketAccess_NonexistentUser(t *testing.T) {
+	p, ff := newProv(t)
+
+	if _, err := p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{AccountId: "ghost"}); err != nil {
+		t.Fatalf("revoke of missing user: %v", err)
+	}
+	if data := ff.iam(); len(data) != 0 {
+		t.Fatalf("identity.json recreated by revoke: %s", data)
 	}
 }
 
@@ -660,8 +793,8 @@ func TestDriverCreateBucketObjectLock(t *testing.T) {
 			wantCode: codes.InvalidArgument,
 		},
 		{
-			name:    "invalid objectLockEnabled value",
-			params:  map[string]string{"objectLockEnabled": "True"},
+			name:     "invalid objectLockEnabled value",
+			params:   map[string]string{"objectLockEnabled": "True"},
 			wantCode: codes.InvalidArgument,
 		},
 		{
