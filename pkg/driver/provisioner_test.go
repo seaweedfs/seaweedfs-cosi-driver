@@ -456,17 +456,25 @@ func TestDriverGrantBucketAccessPolicy(t *testing.T) {
 		{
 			name:        "readonly access",
 			params:      map[string]string{"accessPolicy": "readonly"},
-			wantActions: []string{"List:b", "Read:b"},
+			wantActions: []string{"GetBucketObjectLockConfiguration:b", "GetObjectLegalHold:b", "GetObjectRetention:b", "List:b", "Read:b"},
 		},
 		{
-			name:        "readwrite access",
-			params:      map[string]string{"accessPolicy": "readwrite"},
-			wantActions: []string{"List:b", "Read:b", "Tagging:b", "Write:b"},
+			name:   "readwrite access",
+			params: map[string]string{"accessPolicy": "readwrite"},
+			wantActions: []string{
+				"GetBucketObjectLockConfiguration:b", "GetObjectLegalHold:b", "GetObjectRetention:b", "List:b",
+				"PutBucketObjectLockConfiguration:b", "PutObjectLegalHold:b", "PutObjectRetention:b", "Read:b",
+				"Tagging:b", "Write:b",
+			},
 		},
 		{
-			name:        "default access (no param)",
-			params:      nil,
-			wantActions: []string{"List:b", "Read:b", "Tagging:b", "Write:b"},
+			name:   "default access (no param)",
+			params: nil,
+			wantActions: []string{
+				"GetBucketObjectLockConfiguration:b", "GetObjectLegalHold:b", "GetObjectRetention:b", "List:b",
+				"PutBucketObjectLockConfiguration:b", "PutObjectLegalHold:b", "PutObjectRetention:b", "Read:b",
+				"Tagging:b", "Write:b",
+			},
 		},
 		{
 			name:     "invalid access policy",

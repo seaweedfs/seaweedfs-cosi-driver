@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -589,14 +590,30 @@ func validateObjectLockParams(params map[string]string) error {
 	return nil
 }
 
+// SeaweedFS checks Object Lock operations against dedicated actions rather
+// than Read and Write, so each policy names them explicitly. Governance
+// bypass is left out: Write never covered it.
+var (
+	objectLockReadActions = []string{
+		s3_constants.ACTION_GET_OBJECT_RETENTION,
+		s3_constants.ACTION_GET_OBJECT_LEGAL_HOLD,
+		s3_constants.ACTION_GET_BUCKET_OBJECT_LOCK_CONFIG,
+	}
+	objectLockWriteActions = []string{
+		s3_constants.ACTION_PUT_OBJECT_RETENTION,
+		s3_constants.ACTION_PUT_OBJECT_LEGAL_HOLD,
+		s3_constants.ACTION_PUT_BUCKET_OBJECT_LOCK_CONFIG,
+	}
+)
+
 // actionsForPolicy returns the IAM action names for the given access policy.
 // Supported values: "readonly", "readwrite", "" (defaults to readwrite).
 func actionsForPolicy(policy string) ([]string, error) {
 	switch policy {
 	case "readonly":
-		return []string{"Read", "List"}, nil
+		return slices.Concat([]string{"Read", "List"}, objectLockReadActions), nil
 	case "readwrite", "":
-		return []string{"Read", "Write", "List", "Tagging"}, nil
+		return slices.Concat([]string{"Read", "Write", "List", "Tagging"}, objectLockReadActions, objectLockWriteActions), nil
 	default:
 		return nil, fmt.Errorf("unsupported accessPolicy %q, must be \"readonly\" or \"readwrite\"", policy)
 	}
