@@ -467,6 +467,45 @@ func TestDriverGrantBucketAccess_WritesPerIdentityFile(t *testing.T) {
 	}
 }
 
+// A second grant after migration must merge with the per-identity file, not
+// overwrite it — otherwise the first credential stops working.
+func TestDriverGrantBucketAccess_RegrantMergesPerIdentity(t *testing.T) {
+	p, ff := newProv(t)
+
+	if _, err := p.DriverGrantBucketAccess(context.Background(),
+		&cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u"}); err != nil {
+		t.Fatalf("first grant: %v", err)
+	}
+	// Simulate completed migration: legacy file gone, per-identity carries grant 1.
+	delete(ff.files, ff.fileKey(filer.IamConfigDirectory, filer.IamIdentityFile))
+
+	if _, err := p.DriverGrantBucketAccess(context.Background(),
+		&cosispec.DriverGrantBucketAccessRequest{BucketId: "c", Name: "u"}); err != nil {
+		t.Fatalf("second grant: %v", err)
+	}
+
+	key := filer.IamConfigDirectory + "/identities/u.json"
+	var id iam_pb.Identity
+	if err := json.Unmarshal(ff.files[key], &id); err != nil {
+		t.Fatalf("unmarshal per-identity: %v", err)
+	}
+	if len(id.Credentials) != 2 {
+		t.Fatalf("credentials=%d want both grants merged", len(id.Credentials))
+	}
+	seen := map[string]bool{}
+	var buckets []string
+	for _, a := range id.Actions {
+		if i := strings.LastIndex(a, ":"); i >= 0 && !seen[a[i+1:]] {
+			seen[a[i+1:]] = true
+			buckets = append(buckets, a[i+1:])
+		}
+	}
+	sort.Strings(buckets)
+	if !reflect.DeepEqual(buckets, []string{"b", "c"}) {
+		t.Fatalf("actions %v want grants for b and c", buckets)
+	}
+}
+
 // iamActions parses the fakeFiler IAM buffer and returns sorted actions for the given identity.
 func iamActions(t *testing.T, ff *fakeFiler, identity string) []string {
 	t.Helper()
