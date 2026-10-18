@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -275,6 +276,34 @@ func (s *provisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 		}
 	}
 
+	// A filer that already migrated to per-identity files holds the user's
+	// state there, not in legacy identity.json — merge it in so a repeat
+	// grant preserves the credentials and actions it carried. A read failure
+	// must not pass for "no identity": overwriting blind would drop the
+	// credentials it already had.
+	idData, readErr := s.readS3Identity(ctx, user+".json")
+	if readErr != nil {
+		return nil, status.Error(codes.Internal, readErr.Error())
+	}
+	if len(idData) > 0 {
+		migrated := &iam_pb.Identity{}
+		if err := json.Unmarshal(idData, migrated); err == nil && migrated.Name == user {
+			idx := -1
+			for i, existing := range cfg.Identities {
+				if existing.Name == user {
+					idx = i
+					break
+				}
+			}
+			if idx >= 0 {
+				cfg.Identities[idx].Credentials = mergeCredentials(cfg.Identities[idx].Credentials, migrated.Credentials)
+				cfg.Identities[idx].Actions = mergeActions(cfg.Identities[idx].Actions, migrated.Actions)
+			} else {
+				cfg.Identities = append(cfg.Identities, migrated)
+			}
+		}
+	}
+
 	// ensure identity exists
 	var id *iam_pb.Identity
 	for _, i := range cfg.Identities {
@@ -300,6 +329,22 @@ func (s *provisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	filer.ProtoToText(&cfgBuf, cfg)
 	if err := s.saveS3Configuration(ctx, cfgBuf.Bytes()); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	// Newer filers keep one file per identity under /etc/iam/identities/ and a
+	// gateway may migrate identity.json into it at any moment; the single-file
+	// write above can then be renamed away with the grant still only on its
+	// way in. Write the per-identity file too — same content the migration
+	// would produce — so the grant survives either layout.
+	idJSON, err := json.Marshal(id)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	// The legacy write already delivers the grant — gateways either read it
+	// directly (pre-4.08) or migrate it into this layout — so a failed
+	// per-identity write is a warning, not a failed grant.
+	if err := s.saveS3Identity(ctx, id.Name+".json", idJSON); err != nil {
+		klog.ErrorS(err, "failed to write per-identity file", "user", user)
 	}
 
 	klog.InfoS("granted bucket access", "user", user, "bucket", bucket, "accessKey", accessKey)
@@ -434,6 +479,82 @@ func (s *provisionerServer) saveS3Configuration(ctx context.Context, data []byte
 			},
 		})
 		return err
+	})
+}
+
+func (s *provisionerServer) readS3Identity(ctx context.Context, name string) ([]byte, error) {
+	var buf bytes.Buffer
+	err := s.withFilerClient(ctx, func(c filer_pb.SeaweedFilerClient) error {
+		resp, err := c.LookupDirectoryEntry(ctx, &filer_pb.LookupDirectoryEntryRequest{
+			Directory: filer.IamConfigDirectory + "/identities",
+			Name:      name,
+		})
+		if err != nil && !isNotFoundError(err) {
+			return err
+		}
+		if resp != nil && resp.Entry != nil && resp.Entry.Content != nil {
+			buf.Write(resp.Entry.Content)
+		}
+		return nil
+	})
+	return buf.Bytes(), err
+}
+
+func mergeCredentials(base, extra []*iam_pb.Credential) []*iam_pb.Credential {
+	seen := make(map[string]bool, len(base))
+	for _, c := range base {
+		seen[c.AccessKey] = true
+	}
+	for _, c := range extra {
+		if !seen[c.AccessKey] {
+			base = append(base, c)
+			seen[c.AccessKey] = true
+		}
+	}
+	return base
+}
+
+func mergeActions(base, extra []string) []string {
+	for _, a := range extra {
+		if !contains(base, a) {
+			base = append(base, a)
+		}
+	}
+	return base
+}
+
+func (s *provisionerServer) saveS3Identity(ctx context.Context, name string, data []byte) error {
+	return s.withFilerClient(ctx, func(c filer_pb.SeaweedFilerClient) error {
+		dir := filer.IamConfigDirectory + "/identities"
+		_, err := c.UpdateEntry(ctx, &filer_pb.UpdateEntryRequest{
+			Directory: dir,
+			Entry: &filer_pb.Entry{
+				Name:        name,
+				Content:     data,
+				IsDirectory: false,
+			},
+		})
+		if err == nil {
+			return nil
+		}
+		if !isNotFoundError(err) {
+			return err
+		}
+		create, err := c.CreateEntry(ctx, &filer_pb.CreateEntryRequest{
+			Directory: dir,
+			Entry: &filer_pb.Entry{
+				Name:        name,
+				Content:     data,
+				IsDirectory: false,
+			},
+		})
+		if err != nil {
+			return err
+		}
+		if create != nil && create.Error != "" {
+			return errors.New(create.Error)
+		}
+		return nil
 	})
 }
 

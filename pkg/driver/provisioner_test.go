@@ -24,6 +24,7 @@ import (
 	"net"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -422,6 +423,86 @@ func TestDriverGrantBucketAccess(t *testing.T) {
 				t.Errorf("credentials missing")
 			}
 		})
+	}
+}
+
+// TestDriverGrantBucketAccess_WritesPerIdentityFile simulates the gateway's
+// single-file to multi-file migration racing a grant: the legacy identity.json
+// is renamed away and the grant must still be visible from the per-identity
+// file the newer filers read.
+func TestDriverGrantBucketAccess_WritesPerIdentityFile(t *testing.T) {
+	p, ff := newProv(t)
+
+	if _, err := p.DriverGrantBucketAccess(context.Background(),
+		&cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u"}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	// Migration moved identity.json aside before the grant landed.
+	delete(ff.files, ff.fileKey(filer.IamConfigDirectory, filer.IamIdentityFile))
+
+	key := filer.IamConfigDirectory + "/identities/u.json"
+	data, ok := ff.files[key]
+	if !ok {
+		t.Fatalf("per-identity file %s missing after grant", key)
+	}
+	var id iam_pb.Identity
+	if err := json.Unmarshal(data, &id); err != nil {
+		t.Fatalf("unmarshal per-identity file: %v", err)
+	}
+	if id.Name != "u" {
+		t.Fatalf("per-identity name=%q want u", id.Name)
+	}
+	if len(id.Credentials) != 1 {
+		t.Fatalf("per-identity credentials=%d want 1", len(id.Credentials))
+	}
+	found := false
+	for _, a := range id.Actions {
+		if strings.HasSuffix(a, ":b") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("per-identity actions %v lack the bucket grant", id.Actions)
+	}
+}
+
+// A second grant after migration must merge with the per-identity file, not
+// overwrite it — otherwise the first credential stops working.
+func TestDriverGrantBucketAccess_RegrantMergesPerIdentity(t *testing.T) {
+	p, ff := newProv(t)
+
+	if _, err := p.DriverGrantBucketAccess(context.Background(),
+		&cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u"}); err != nil {
+		t.Fatalf("first grant: %v", err)
+	}
+	// Simulate completed migration: legacy file gone, per-identity carries grant 1.
+	delete(ff.files, ff.fileKey(filer.IamConfigDirectory, filer.IamIdentityFile))
+
+	if _, err := p.DriverGrantBucketAccess(context.Background(),
+		&cosispec.DriverGrantBucketAccessRequest{BucketId: "c", Name: "u"}); err != nil {
+		t.Fatalf("second grant: %v", err)
+	}
+
+	key := filer.IamConfigDirectory + "/identities/u.json"
+	var id iam_pb.Identity
+	if err := json.Unmarshal(ff.files[key], &id); err != nil {
+		t.Fatalf("unmarshal per-identity: %v", err)
+	}
+	if len(id.Credentials) != 2 {
+		t.Fatalf("credentials=%d want both grants merged", len(id.Credentials))
+	}
+	seen := map[string]bool{}
+	var buckets []string
+	for _, a := range id.Actions {
+		if i := strings.LastIndex(a, ":"); i >= 0 && !seen[a[i+1:]] {
+			seen[a[i+1:]] = true
+			buckets = append(buckets, a[i+1:])
+		}
+	}
+	sort.Strings(buckets)
+	if !reflect.DeepEqual(buckets, []string{"b", "c"}) {
+		t.Fatalf("actions %v want grants for b and c", buckets)
 	}
 }
 
