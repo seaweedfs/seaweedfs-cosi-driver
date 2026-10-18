@@ -24,6 +24,7 @@ import (
 	"net"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -422,6 +423,47 @@ func TestDriverGrantBucketAccess(t *testing.T) {
 				t.Errorf("credentials missing")
 			}
 		})
+	}
+}
+
+// TestDriverGrantBucketAccess_WritesPerIdentityFile simulates the gateway's
+// single-file to multi-file migration racing a grant: the legacy identity.json
+// is renamed away and the grant must still be visible from the per-identity
+// file the newer filers read.
+func TestDriverGrantBucketAccess_WritesPerIdentityFile(t *testing.T) {
+	p, ff := newProv(t)
+
+	if _, err := p.DriverGrantBucketAccess(context.Background(),
+		&cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u"}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	// Migration moved identity.json aside before the grant landed.
+	delete(ff.files, ff.fileKey(filer.IamConfigDirectory, filer.IamIdentityFile))
+
+	key := filer.IamConfigDirectory + "/identities/u.json"
+	data, ok := ff.files[key]
+	if !ok {
+		t.Fatalf("per-identity file %s missing after grant", key)
+	}
+	var id iam_pb.Identity
+	if err := json.Unmarshal(data, &id); err != nil {
+		t.Fatalf("unmarshal per-identity file: %v", err)
+	}
+	if id.Name != "u" {
+		t.Fatalf("per-identity name=%q want u", id.Name)
+	}
+	if len(id.Credentials) != 1 {
+		t.Fatalf("per-identity credentials=%d want 1", len(id.Credentials))
+	}
+	found := false
+	for _, a := range id.Actions {
+		if strings.HasSuffix(a, ":b") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("per-identity actions %v lack the bucket grant", id.Actions)
 	}
 }
 

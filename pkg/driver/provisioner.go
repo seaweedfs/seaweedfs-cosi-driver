@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -302,6 +303,19 @@ func (s *provisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
+	// Newer filers keep one file per identity under /etc/iam/identities/ and a
+	// gateway may migrate identity.json into it at any moment; the single-file
+	// write above can then be renamed away with the grant still only on its
+	// way in. Write the per-identity file too — same content the migration
+	// would produce — so the grant survives either layout.
+	idData, err := json.Marshal(id)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	if err := s.saveS3Identity(ctx, id.Name+".json", idData); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
 	klog.InfoS("granted bucket access", "user", user, "bucket", bucket, "accessKey", accessKey)
 	return &cosispec.DriverGrantBucketAccessResponse{
 		AccountId: user,
@@ -429,6 +443,32 @@ func (s *provisionerServer) saveS3Configuration(ctx context.Context, data []byte
 			Directory: filer.IamConfigDirectory,
 			Entry: &filer_pb.Entry{
 				Name:        filer.IamIdentityFile,
+				Content:     data,
+				IsDirectory: false,
+			},
+		})
+		return err
+	})
+}
+
+func (s *provisionerServer) saveS3Identity(ctx context.Context, name string, data []byte) error {
+	return s.withFilerClient(ctx, func(c filer_pb.SeaweedFilerClient) error {
+		dir := filer.IamConfigDirectory + "/identities"
+		_, err := c.UpdateEntry(ctx, &filer_pb.UpdateEntryRequest{
+			Directory: dir,
+			Entry: &filer_pb.Entry{
+				Name:        name,
+				Content:     data,
+				IsDirectory: false,
+			},
+		})
+		if err == nil || !isNotFoundError(err) {
+			return err
+		}
+		_, err = c.CreateEntry(ctx, &filer_pb.CreateEntryRequest{
+			Directory: dir,
+			Entry: &filer_pb.Entry{
+				Name:        name,
 				Content:     data,
 				IsDirectory: false,
 			},
