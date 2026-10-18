@@ -278,8 +278,14 @@ func (s *provisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 
 	// A filer that already migrated to per-identity files holds the user's
 	// state there, not in legacy identity.json — merge it in so a repeat
-	// grant preserves the credentials and actions it carried.
-	if idData, err := s.readS3Identity(ctx, user+".json"); err == nil && len(idData) > 0 {
+	// grant preserves the credentials and actions it carried. A read failure
+	// must not pass for "no identity": overwriting blind would drop the
+	// credentials it already had.
+	idData, readErr := s.readS3Identity(ctx, user+".json")
+	if readErr != nil {
+		return nil, status.Error(codes.Internal, readErr.Error())
+	}
+	if len(idData) > 0 {
 		migrated := &iam_pb.Identity{}
 		if err := json.Unmarshal(idData, migrated); err == nil && migrated.Name == user {
 			idx := -1
@@ -330,12 +336,15 @@ func (s *provisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	// write above can then be renamed away with the grant still only on its
 	// way in. Write the per-identity file too — same content the migration
 	// would produce — so the grant survives either layout.
-	idData, err := json.Marshal(id)
+	idJSON, err := json.Marshal(id)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	if err := s.saveS3Identity(ctx, id.Name+".json", idData); err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+	// The legacy write already delivers the grant — gateways either read it
+	// directly (pre-4.08) or migrate it into this layout — so a failed
+	// per-identity write is a warning, not a failed grant.
+	if err := s.saveS3Identity(ctx, id.Name+".json", idJSON); err != nil {
+		klog.ErrorS(err, "failed to write per-identity file", "user", user)
 	}
 
 	klog.InfoS("granted bucket access", "user", user, "bucket", bucket, "accessKey", accessKey)
@@ -525,10 +534,13 @@ func (s *provisionerServer) saveS3Identity(ctx context.Context, name string, dat
 				IsDirectory: false,
 			},
 		})
-		if err == nil || !isNotFoundError(err) {
+		if err == nil {
+			return nil
+		}
+		if !isNotFoundError(err) {
 			return err
 		}
-		_, err = c.CreateEntry(ctx, &filer_pb.CreateEntryRequest{
+		create, err := c.CreateEntry(ctx, &filer_pb.CreateEntryRequest{
 			Directory: dir,
 			Entry: &filer_pb.Entry{
 				Name:        name,
@@ -536,7 +548,13 @@ func (s *provisionerServer) saveS3Identity(ctx context.Context, name string, dat
 				IsDirectory: false,
 			},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		if create != nil && create.Error != "" {
+			return errors.New(create.Error)
+		}
+		return nil
 	})
 }
 
