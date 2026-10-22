@@ -558,6 +558,16 @@ func TestDriverGrantBucketAccessPolicy(t *testing.T) {
 			},
 		},
 		{
+			name:   "readwrite with governance bypass",
+			params: map[string]string{"accessPolicy": "readwrite-governance-bypass"},
+			wantActions: []string{
+				"BypassGovernanceRetention:b",
+				"GetBucketObjectLockConfiguration:b", "GetObjectLegalHold:b", "GetObjectRetention:b", "List:b",
+				"PutBucketObjectLockConfiguration:b", "PutObjectLegalHold:b", "PutObjectRetention:b", "Read:b",
+				"Tagging:b", "Write:b",
+			},
+		},
+		{
 			name:     "invalid access policy",
 			params:   map[string]string{"accessPolicy": "invalid"},
 			wantCode: codes.InvalidArgument,
