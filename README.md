@@ -78,3 +78,32 @@ file named: `BucketInfo` containing a json:
   }
 }
 ```
+
+### Choose what a BucketAccess may do
+
+The `accessPolicy` parameter of a BucketAccessClass sets the
+actions granted to every key issued through it:
+
+- `readwrite` (default): read, write, list and tag objects; read and
+  set Object Lock retention, legal holds and the bucket's Object Lock
+  configuration.
+- `readonly`: read and list objects; read Object Lock retention, legal
+  holds and configuration.
+- `readwrite-governance-bypass`: everything `readwrite` grants, plus
+  deleting or overwriting objects under GOVERNANCE retention when the
+  request sends `x-amz-bypass-governance-retention: true`.
+
+`readwrite-governance-bypass` requires SeaweedFS 4.48 or later.
+Earlier servers do not match its bucket-scoped grant, so the key
+behaves as `readwrite` and GOVERNANCE retention cannot be bypassed.
+
+```yaml
+kind: BucketAccessClass
+apiVersion: objectstorage.k8s.io/v1alpha1
+metadata:
+  name: sample-bac-governance-bypass
+driverName: seaweedfs.objectstorage.k8s.io
+authenticationType: KEY
+parameters:
+  accessPolicy: readwrite-governance-bypass
+```

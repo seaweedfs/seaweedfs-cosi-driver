@@ -713,7 +713,8 @@ func validateObjectLockParams(params map[string]string) error {
 
 // SeaweedFS checks Object Lock operations against dedicated actions rather
 // than Read and Write, so each policy names them explicitly. Governance
-// bypass is left out: Write never covered it.
+// bypass is left out of readwrite, since Write never covered it, and has a
+// policy of its own.
 var (
 	objectLockReadActions = []string{
 		s3_constants.ACTION_GET_OBJECT_RETENTION,
@@ -728,15 +729,24 @@ var (
 )
 
 // actionsForPolicy returns the IAM action names for the given access policy.
-// Supported values: "readonly", "readwrite", "" (defaults to readwrite).
+// Supported values: "readonly", "readwrite", "readwrite-governance-bypass",
+// "" (defaults to readwrite).
+//
+// readwrite-governance-bypass lets the key delete or overwrite objects under
+// GOVERNANCE retention when the request carries
+// x-amz-bypass-governance-retention. SeaweedFS matches this bucket-scoped
+// grant from 4.48 on; earlier servers ignore it.
 func actionsForPolicy(policy string) ([]string, error) {
+	readwrite := slices.Concat([]string{"Read", "Write", "List", "Tagging"}, objectLockReadActions, objectLockWriteActions)
 	switch policy {
 	case "readonly":
 		return slices.Concat([]string{"Read", "List"}, objectLockReadActions), nil
 	case "readwrite", "":
-		return slices.Concat([]string{"Read", "Write", "List", "Tagging"}, objectLockReadActions, objectLockWriteActions), nil
+		return readwrite, nil
+	case "readwrite-governance-bypass":
+		return append(readwrite, s3_constants.ACTION_BYPASS_GOVERNANCE_RETENTION), nil
 	default:
-		return nil, fmt.Errorf("unsupported accessPolicy %q, must be \"readonly\" or \"readwrite\"", policy)
+		return nil, fmt.Errorf("unsupported accessPolicy %q, must be \"readonly\", \"readwrite\" or \"readwrite-governance-bypass\"", policy)
 	}
 }
 
