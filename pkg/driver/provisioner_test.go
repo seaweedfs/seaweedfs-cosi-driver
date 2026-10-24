@@ -45,9 +45,17 @@ type fakeFiler struct {
 	filer_pb.UnimplementedSeaweedFilerServer
 	files   map[string][]byte
 	buckets map[string]*filer_pb.Entry
+	entries map[string]*filer_pb.Entry
 }
 
 func (f *fakeFiler) fileKey(dir, name string) string { return dir + "/" + name }
+
+func (f *fakeFiler) putEntry(dir string, e *filer_pb.Entry) {
+	if f.entries == nil {
+		f.entries = make(map[string]*filer_pb.Entry)
+	}
+	f.entries[f.fileKey(dir, e.Name)] = e
+}
 
 func (f *fakeFiler) CreateEntry(_ context.Context, in *filer_pb.CreateEntryRequest) (*filer_pb.CreateEntryResponse, error) {
 	if f.files == nil {
@@ -56,6 +64,7 @@ func (f *fakeFiler) CreateEntry(_ context.Context, in *filer_pb.CreateEntryReque
 	if in.Entry.Content != nil {
 		f.files[f.fileKey(in.Directory, in.Entry.Name)] = in.Entry.Content
 	}
+	f.putEntry(in.Directory, in.Entry)
 	if in.Directory == "/buckets" {
 		if f.buckets == nil {
 			f.buckets = make(map[string]*filer_pb.Entry)
@@ -71,11 +80,15 @@ func (f *fakeFiler) UpdateEntry(_ context.Context, in *filer_pb.UpdateEntryReque
 		return nil, status.Error(codes.NotFound, "no entry is found in filer store")
 	}
 	f.files[key] = in.Entry.Content
+	f.putEntry(in.Directory, in.Entry)
 	return &filer_pb.UpdateEntryResponse{}, nil
 }
 
 func (f *fakeFiler) LookupDirectoryEntry(_ context.Context, in *filer_pb.LookupDirectoryEntryRequest) (*filer_pb.LookupDirectoryEntryResponse, error) {
 	key := f.fileKey(in.Directory, in.Name)
+	if e, ok := f.entries[key]; ok {
+		return &filer_pb.LookupDirectoryEntryResponse{Entry: e}, nil
+	}
 	data, ok := f.files[key]
 	if !ok {
 		return nil, status.Error(codes.NotFound, "no entry is found in filer store")
@@ -86,6 +99,34 @@ func (f *fakeFiler) LookupDirectoryEntry(_ context.Context, in *filer_pb.LookupD
 	}}, nil
 }
 
+func (f *fakeFiler) ListEntries(in *filer_pb.ListEntriesRequest, stream filer_pb.SeaweedFiler_ListEntriesServer) error {
+	prefix := in.Directory + "/"
+	var names []string
+	for k := range f.entries {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		name := k[len(prefix):]
+		if strings.Contains(name, "/") {
+			continue
+		}
+		if name < in.StartFromFileName || (name == in.StartFromFileName && !in.InclusiveStartFrom) {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for i, name := range names {
+		if in.Limit > 0 && uint32(i) >= in.Limit {
+			break
+		}
+		if err := stream.Send(&filer_pb.ListEntriesResponse{Entry: f.entries[prefix+name]}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (f *fakeFiler) DeleteEntry(_ context.Context, in *filer_pb.DeleteEntryRequest) (*filer_pb.DeleteEntryResponse, error) {
 	key := f.fileKey(in.Directory, in.Name)
 	if in.Directory == "/buckets" {
@@ -93,13 +134,29 @@ func (f *fakeFiler) DeleteEntry(_ context.Context, in *filer_pb.DeleteEntryReque
 			return nil, status.Error(codes.NotFound, "no entry is found in filer store")
 		}
 		delete(f.buckets, in.Name)
+		delete(f.entries, key)
 		delete(f.files, key)
+		if in.IsRecursive {
+			for k := range f.entries {
+				if strings.HasPrefix(k, key+"/") {
+					delete(f.entries, k)
+				}
+			}
+			for k := range f.files {
+				if strings.HasPrefix(k, key+"/") {
+					delete(f.files, k)
+				}
+			}
+		}
 		return &filer_pb.DeleteEntryResponse{}, nil
 	}
 	if _, ok := f.files[key]; !ok {
-		return &filer_pb.DeleteEntryResponse{Error: filer_pb.ErrNotFound.Error()}, nil
+		if _, ok := f.entries[key]; !ok {
+			return &filer_pb.DeleteEntryResponse{Error: filer_pb.ErrNotFound.Error()}, nil
+		}
 	}
 	delete(f.files, key)
+	delete(f.entries, key)
 	return &filer_pb.DeleteEntryResponse{}, nil
 }
 
