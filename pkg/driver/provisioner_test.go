@@ -24,9 +24,11 @@ import (
 	"net"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/seaweedfs/seaweedfs/weed/filer"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
@@ -1084,6 +1086,140 @@ func TestDriverDeleteBucketExisting(t *testing.T) {
 	}
 	if _, ok := ff.buckets["to-delete"]; ok {
 		t.Error("bucket still exists after deletion")
+	}
+}
+
+func TestDriverDeleteBucketObjectLock(t *testing.T) {
+	future := strconv.FormatInt(time.Now().Add(24*time.Hour).Unix(), 10)
+	past := strconv.FormatInt(time.Now().Add(-time.Hour).Unix(), 10)
+
+	complianceLocked := map[string][]byte{
+		s3_constants.ExtObjectLockModeKey:     []byte(s3_constants.RetentionModeCompliance),
+		s3_constants.ExtRetentionUntilDateKey: []byte(future),
+	}
+	governanceLocked := map[string][]byte{
+		s3_constants.ExtObjectLockModeKey:     []byte(s3_constants.RetentionModeGovernance),
+		s3_constants.ExtRetentionUntilDateKey: []byte(future),
+	}
+	complianceExpired := map[string][]byte{
+		s3_constants.ExtObjectLockModeKey:     []byte(s3_constants.RetentionModeCompliance),
+		s3_constants.ExtRetentionUntilDateKey: []byte(past),
+	}
+	legalHold := map[string][]byte{
+		s3_constants.ExtLegalHoldKey: []byte(s3_constants.LegalHoldOn),
+	}
+
+	obj := func(ext map[string][]byte) *filer_pb.Entry {
+		return &filer_pb.Entry{Extended: ext}
+	}
+	dir := func() *filer_pb.Entry {
+		return &filer_pb.Entry{IsDirectory: true}
+	}
+
+	cases := []struct {
+		name     string
+		params   map[string]string
+		objects  map[string]*filer_pb.Entry // path under /buckets/<id>/ -> entry
+		wantCode codes.Code
+	}{
+		{
+			name:     "compliance retention blocks delete",
+			params:   map[string]string{"objectLockEnabled": "true"},
+			objects:  map[string]*filer_pb.Entry{"doc.txt": obj(complianceLocked)},
+			wantCode: codes.FailedPrecondition,
+		},
+		{
+			name:     "governance retention blocks delete",
+			params:   map[string]string{"objectLockEnabled": "true"},
+			objects:  map[string]*filer_pb.Entry{"doc.txt": obj(governanceLocked)},
+			wantCode: codes.FailedPrecondition,
+		},
+		{
+			name:     "legal hold blocks delete",
+			params:   map[string]string{"objectLockEnabled": "true"},
+			objects:  map[string]*filer_pb.Entry{"doc.txt": obj(legalHold)},
+			wantCode: codes.FailedPrecondition,
+		},
+		{
+			name:   "locked version under .versions blocks delete",
+			params: map[string]string{"objectLockEnabled": "true"},
+			objects: map[string]*filer_pb.Entry{
+				"doc.txt.versions":     dir(),
+				"doc.txt.versions/v_1": obj(complianceLocked),
+			},
+			wantCode: codes.FailedPrecondition,
+		},
+		{
+			name:     "expired retention allows delete",
+			params:   map[string]string{"objectLockEnabled": "true"},
+			objects:  map[string]*filer_pb.Entry{"doc.txt": obj(complianceExpired)},
+			wantCode: codes.OK,
+		},
+		{
+			name:     "unlocked object deletes",
+			params:   map[string]string{"objectLockEnabled": "true"},
+			objects:  map[string]*filer_pb.Entry{"doc.txt": obj(nil)},
+			wantCode: codes.OK,
+		},
+		{
+			name:     "empty lock-enabled bucket deletes",
+			params:   map[string]string{"objectLockEnabled": "true"},
+			wantCode: codes.OK,
+		},
+		{
+			name:     "plain bucket with objects deletes",
+			objects:  map[string]*filer_pb.Entry{"doc.txt": obj(complianceLocked)},
+			wantCode: codes.OK,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p, ff := newProv(t)
+
+			_, err := p.DriverCreateBucket(context.Background(), &cosispec.DriverCreateBucketRequest{
+				Name:       "b",
+				Parameters: c.params,
+			})
+			if err != nil {
+				t.Fatalf("create bucket: %v", err)
+			}
+			for path, e := range c.objects {
+				dir, name := "", path
+				if i := strings.LastIndexByte(path, '/'); i >= 0 {
+					dir, name = path[:i], path[i+1:]
+				}
+				e.Name = name
+				parent := "/buckets/b"
+				if dir != "" {
+					parent += "/" + dir
+				}
+				ff.putEntry(parent, e)
+			}
+
+			_, err = p.DriverDeleteBucket(context.Background(),
+				&cosispec.DriverDeleteBucketRequest{BucketId: "b"})
+			if c.wantCode != codes.OK {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if got := status.Code(err); got != c.wantCode {
+					t.Fatalf("status code=%v want %v", got, c.wantCode)
+				}
+				if _, ok := ff.buckets["b"]; !ok {
+					t.Error("bucket removed despite refusal")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("delete bucket: %v", err)
+			}
+			for path := range c.objects {
+				if _, ok := ff.entries["/buckets/b/"+path]; ok {
+					t.Errorf("entry %s survives deletion", path)
+				}
+			}
+		})
 	}
 }
 

@@ -37,6 +37,7 @@ import (
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
 	"github.com/seaweedfs/seaweedfs/weed/pb/iam_pb"
 	"github.com/seaweedfs/seaweedfs/weed/s3api/s3_constants"
+	"github.com/seaweedfs/seaweedfs/weed/s3api/s3_objectlock"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -188,7 +189,25 @@ func (s *provisionerServer) createBucket(ctx context.Context, name string, param
 
 func (s *provisionerServer) deleteBucket(ctx context.Context, id string) error {
 	return s.withFilerClient(ctx, func(c filer_pb.SeaweedFilerClient) error {
-		_, err := c.DeleteEntry(ctx, &filer_pb.DeleteEntryRequest{
+		lookupResp, err := c.LookupDirectoryEntry(ctx, &filer_pb.LookupDirectoryEntryRequest{
+			Directory: s.filerBucketsPath,
+			Name:      id,
+		})
+		switch {
+		case err != nil && !isNotFoundError(err):
+			return err
+		case err == nil && s3_objectlock.IsObjectLockEnabled(lookupResp.Entry):
+			// The recursive delete below bypasses the S3 gateway's
+			// retention and legal hold checks, so enforce them here.
+			hasLocks, err := s3_objectlock.HasObjectsWithActiveLocks(ctx, c, s.filerBucketsPath+"/"+id)
+			if err != nil {
+				return err
+			}
+			if hasLocks {
+				return ErrBucketHasLockedObjects
+			}
+		}
+		_, err = c.DeleteEntry(ctx, &filer_pb.DeleteEntryRequest{
 			Directory:            s.filerBucketsPath,
 			Name:                 id,
 			IsDeleteData:         true,
@@ -239,6 +258,9 @@ func (s *provisionerServer) DriverDeleteBucket(ctx context.Context, req *cosispe
 	klog.InfoS("deleting bucket", "name", req.GetBucketId())
 	if err := s.deleteBucket(ctx, req.GetBucketId()); err != nil {
 		klog.ErrorS(err, "delete bucket failed")
+		if errors.Is(err, ErrBucketHasLockedObjects) {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	klog.InfoS("deleted bucket", "name", req.GetBucketId())
