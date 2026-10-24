@@ -24,9 +24,11 @@ import (
 	"net"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/seaweedfs/seaweedfs/weed/filer"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
@@ -45,9 +47,17 @@ type fakeFiler struct {
 	filer_pb.UnimplementedSeaweedFilerServer
 	files   map[string][]byte
 	buckets map[string]*filer_pb.Entry
+	entries map[string]*filer_pb.Entry
 }
 
 func (f *fakeFiler) fileKey(dir, name string) string { return dir + "/" + name }
+
+func (f *fakeFiler) putEntry(dir string, e *filer_pb.Entry) {
+	if f.entries == nil {
+		f.entries = make(map[string]*filer_pb.Entry)
+	}
+	f.entries[f.fileKey(dir, e.Name)] = e
+}
 
 func (f *fakeFiler) CreateEntry(_ context.Context, in *filer_pb.CreateEntryRequest) (*filer_pb.CreateEntryResponse, error) {
 	if f.files == nil {
@@ -56,6 +66,7 @@ func (f *fakeFiler) CreateEntry(_ context.Context, in *filer_pb.CreateEntryReque
 	if in.Entry.Content != nil {
 		f.files[f.fileKey(in.Directory, in.Entry.Name)] = in.Entry.Content
 	}
+	f.putEntry(in.Directory, in.Entry)
 	if in.Directory == "/buckets" {
 		if f.buckets == nil {
 			f.buckets = make(map[string]*filer_pb.Entry)
@@ -71,11 +82,15 @@ func (f *fakeFiler) UpdateEntry(_ context.Context, in *filer_pb.UpdateEntryReque
 		return nil, status.Error(codes.NotFound, "no entry is found in filer store")
 	}
 	f.files[key] = in.Entry.Content
+	f.putEntry(in.Directory, in.Entry)
 	return &filer_pb.UpdateEntryResponse{}, nil
 }
 
 func (f *fakeFiler) LookupDirectoryEntry(_ context.Context, in *filer_pb.LookupDirectoryEntryRequest) (*filer_pb.LookupDirectoryEntryResponse, error) {
 	key := f.fileKey(in.Directory, in.Name)
+	if e, ok := f.entries[key]; ok {
+		return &filer_pb.LookupDirectoryEntryResponse{Entry: e}, nil
+	}
 	data, ok := f.files[key]
 	if !ok {
 		return nil, status.Error(codes.NotFound, "no entry is found in filer store")
@@ -86,6 +101,34 @@ func (f *fakeFiler) LookupDirectoryEntry(_ context.Context, in *filer_pb.LookupD
 	}}, nil
 }
 
+func (f *fakeFiler) ListEntries(in *filer_pb.ListEntriesRequest, stream filer_pb.SeaweedFiler_ListEntriesServer) error {
+	prefix := in.Directory + "/"
+	var names []string
+	for k := range f.entries {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		name := k[len(prefix):]
+		if strings.Contains(name, "/") {
+			continue
+		}
+		if name < in.StartFromFileName || (name == in.StartFromFileName && !in.InclusiveStartFrom) {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for i, name := range names {
+		if in.Limit > 0 && uint32(i) >= in.Limit {
+			break
+		}
+		if err := stream.Send(&filer_pb.ListEntriesResponse{Entry: f.entries[prefix+name]}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (f *fakeFiler) DeleteEntry(_ context.Context, in *filer_pb.DeleteEntryRequest) (*filer_pb.DeleteEntryResponse, error) {
 	key := f.fileKey(in.Directory, in.Name)
 	if in.Directory == "/buckets" {
@@ -93,13 +136,29 @@ func (f *fakeFiler) DeleteEntry(_ context.Context, in *filer_pb.DeleteEntryReque
 			return nil, status.Error(codes.NotFound, "no entry is found in filer store")
 		}
 		delete(f.buckets, in.Name)
+		delete(f.entries, key)
 		delete(f.files, key)
+		if in.IsRecursive {
+			for k := range f.entries {
+				if strings.HasPrefix(k, key+"/") {
+					delete(f.entries, k)
+				}
+			}
+			for k := range f.files {
+				if strings.HasPrefix(k, key+"/") {
+					delete(f.files, k)
+				}
+			}
+		}
 		return &filer_pb.DeleteEntryResponse{}, nil
 	}
 	if _, ok := f.files[key]; !ok {
-		return &filer_pb.DeleteEntryResponse{Error: filer_pb.ErrNotFound.Error()}, nil
+		if _, ok := f.entries[key]; !ok {
+			return &filer_pb.DeleteEntryResponse{Error: filer_pb.ErrNotFound.Error()}, nil
+		}
 	}
 	delete(f.files, key)
+	delete(f.entries, key)
 	return &filer_pb.DeleteEntryResponse{}, nil
 }
 
@@ -1027,6 +1086,140 @@ func TestDriverDeleteBucketExisting(t *testing.T) {
 	}
 	if _, ok := ff.buckets["to-delete"]; ok {
 		t.Error("bucket still exists after deletion")
+	}
+}
+
+func TestDriverDeleteBucketObjectLock(t *testing.T) {
+	future := strconv.FormatInt(time.Now().Add(24*time.Hour).Unix(), 10)
+	past := strconv.FormatInt(time.Now().Add(-time.Hour).Unix(), 10)
+
+	complianceLocked := map[string][]byte{
+		s3_constants.ExtObjectLockModeKey:     []byte(s3_constants.RetentionModeCompliance),
+		s3_constants.ExtRetentionUntilDateKey: []byte(future),
+	}
+	governanceLocked := map[string][]byte{
+		s3_constants.ExtObjectLockModeKey:     []byte(s3_constants.RetentionModeGovernance),
+		s3_constants.ExtRetentionUntilDateKey: []byte(future),
+	}
+	complianceExpired := map[string][]byte{
+		s3_constants.ExtObjectLockModeKey:     []byte(s3_constants.RetentionModeCompliance),
+		s3_constants.ExtRetentionUntilDateKey: []byte(past),
+	}
+	legalHold := map[string][]byte{
+		s3_constants.ExtLegalHoldKey: []byte(s3_constants.LegalHoldOn),
+	}
+
+	obj := func(ext map[string][]byte) *filer_pb.Entry {
+		return &filer_pb.Entry{Extended: ext}
+	}
+	dir := func() *filer_pb.Entry {
+		return &filer_pb.Entry{IsDirectory: true}
+	}
+
+	cases := []struct {
+		name     string
+		params   map[string]string
+		objects  map[string]*filer_pb.Entry // path under /buckets/<id>/ -> entry
+		wantCode codes.Code
+	}{
+		{
+			name:     "compliance retention blocks delete",
+			params:   map[string]string{"objectLockEnabled": "true"},
+			objects:  map[string]*filer_pb.Entry{"doc.txt": obj(complianceLocked)},
+			wantCode: codes.FailedPrecondition,
+		},
+		{
+			name:     "governance retention blocks delete",
+			params:   map[string]string{"objectLockEnabled": "true"},
+			objects:  map[string]*filer_pb.Entry{"doc.txt": obj(governanceLocked)},
+			wantCode: codes.FailedPrecondition,
+		},
+		{
+			name:     "legal hold blocks delete",
+			params:   map[string]string{"objectLockEnabled": "true"},
+			objects:  map[string]*filer_pb.Entry{"doc.txt": obj(legalHold)},
+			wantCode: codes.FailedPrecondition,
+		},
+		{
+			name:   "locked version under .versions blocks delete",
+			params: map[string]string{"objectLockEnabled": "true"},
+			objects: map[string]*filer_pb.Entry{
+				"doc.txt.versions":     dir(),
+				"doc.txt.versions/v_1": obj(complianceLocked),
+			},
+			wantCode: codes.FailedPrecondition,
+		},
+		{
+			name:     "expired retention allows delete",
+			params:   map[string]string{"objectLockEnabled": "true"},
+			objects:  map[string]*filer_pb.Entry{"doc.txt": obj(complianceExpired)},
+			wantCode: codes.OK,
+		},
+		{
+			name:     "unlocked object deletes",
+			params:   map[string]string{"objectLockEnabled": "true"},
+			objects:  map[string]*filer_pb.Entry{"doc.txt": obj(nil)},
+			wantCode: codes.OK,
+		},
+		{
+			name:     "empty lock-enabled bucket deletes",
+			params:   map[string]string{"objectLockEnabled": "true"},
+			wantCode: codes.OK,
+		},
+		{
+			name:     "plain bucket with objects deletes",
+			objects:  map[string]*filer_pb.Entry{"doc.txt": obj(complianceLocked)},
+			wantCode: codes.OK,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p, ff := newProv(t)
+
+			_, err := p.DriverCreateBucket(context.Background(), &cosispec.DriverCreateBucketRequest{
+				Name:       "b",
+				Parameters: c.params,
+			})
+			if err != nil {
+				t.Fatalf("create bucket: %v", err)
+			}
+			for path, e := range c.objects {
+				dir, name := "", path
+				if i := strings.LastIndexByte(path, '/'); i >= 0 {
+					dir, name = path[:i], path[i+1:]
+				}
+				e.Name = name
+				parent := "/buckets/b"
+				if dir != "" {
+					parent += "/" + dir
+				}
+				ff.putEntry(parent, e)
+			}
+
+			_, err = p.DriverDeleteBucket(context.Background(),
+				&cosispec.DriverDeleteBucketRequest{BucketId: "b"})
+			if c.wantCode != codes.OK {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if got := status.Code(err); got != c.wantCode {
+					t.Fatalf("status code=%v want %v", got, c.wantCode)
+				}
+				if _, ok := ff.buckets["b"]; !ok {
+					t.Error("bucket removed despite refusal")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("delete bucket: %v", err)
+			}
+			for path := range c.objects {
+				if _, ok := ff.entries["/buckets/b/"+path]; ok {
+					t.Errorf("entry %s survives deletion", path)
+				}
+			}
+		})
 	}
 }
 
