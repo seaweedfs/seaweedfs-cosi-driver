@@ -21,6 +21,7 @@ package driver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"reflect"
 	"sort"
@@ -45,9 +46,13 @@ import (
 
 type fakeFiler struct {
 	filer_pb.UnimplementedSeaweedFilerServer
-	files   map[string][]byte
-	buckets map[string]*filer_pb.Entry
-	entries map[string]*filer_pb.Entry
+	files                    map[string][]byte
+	buckets                  map[string]*filer_pb.Entry
+	entries                  map[string]*filer_pb.Entry
+	createEntryResponseError string
+	legacyUpdateNotFound     bool
+	deleteEntryResponseError string
+	lastDeleteEntryRequest   *filer_pb.DeleteEntryRequest
 }
 
 func (f *fakeFiler) fileKey(dir, name string) string { return dir + "/" + name }
@@ -60,6 +65,9 @@ func (f *fakeFiler) putEntry(dir string, e *filer_pb.Entry) {
 }
 
 func (f *fakeFiler) CreateEntry(_ context.Context, in *filer_pb.CreateEntryRequest) (*filer_pb.CreateEntryResponse, error) {
+	if f.createEntryResponseError != "" {
+		return &filer_pb.CreateEntryResponse{Error: f.createEntryResponseError}, nil
+	}
 	if f.files == nil {
 		f.files = make(map[string][]byte)
 	}
@@ -79,6 +87,9 @@ func (f *fakeFiler) CreateEntry(_ context.Context, in *filer_pb.CreateEntryReque
 func (f *fakeFiler) UpdateEntry(_ context.Context, in *filer_pb.UpdateEntryRequest) (*filer_pb.UpdateEntryResponse, error) {
 	key := f.fileKey(in.Directory, in.Entry.Name)
 	if _, ok := f.files[key]; !ok {
+		if f.legacyUpdateNotFound {
+			return nil, status.Error(codes.Unknown, "not found "+key+": "+filer_pb.ErrNotFound.Error())
+		}
 		return nil, status.Error(codes.NotFound, "no entry is found in filer store")
 	}
 	f.files[key] = in.Entry.Content
@@ -130,6 +141,10 @@ func (f *fakeFiler) ListEntries(in *filer_pb.ListEntriesRequest, stream filer_pb
 }
 
 func (f *fakeFiler) DeleteEntry(_ context.Context, in *filer_pb.DeleteEntryRequest) (*filer_pb.DeleteEntryResponse, error) {
+	f.lastDeleteEntryRequest = in
+	if f.deleteEntryResponseError != "" {
+		return &filer_pb.DeleteEntryResponse{Error: f.deleteEntryResponseError}, nil
+	}
 	key := f.fileKey(in.Directory, in.Name)
 	if in.Directory == "/buckets" {
 		if _, ok := f.buckets[in.Name]; !ok {
@@ -323,6 +338,25 @@ func TestDriverCreateBucket(t *testing.T) {
 	}
 }
 
+func TestDriverCreateBucketReportsFilerResponseError(t *testing.T) {
+	p, ff := newProv(t)
+	ff.createEntryResponseError = "filer is read only"
+
+	resp, err := p.DriverCreateBucket(context.Background(), &cosispec.DriverCreateBucketRequest{
+		Name: "rejected",
+	})
+
+	if resp != nil {
+		t.Fatalf("response=%v want nil", resp)
+	}
+	if got := status.Code(err); got != codes.Internal {
+		t.Fatalf("status code=%v want %v", got, codes.Internal)
+	}
+	if _, exists := ff.buckets["rejected"]; exists {
+		t.Fatal("bucket was recorded after the filer rejected creation")
+	}
+}
+
 func TestDriverCreateBucketSequentialPreservesAll(t *testing.T) {
 	p, ff := newProv(t)
 	confKey := filer.DirectoryEtcSeaweedFS + "/" + filer.FilerConfName
@@ -443,6 +477,106 @@ func TestDriverDeleteBucket(t *testing.T) {
 			t.Error("FilerConf should not be created when deleting a bucket without params")
 		}
 	})
+}
+
+func TestDriverDeleteBucketReportsFilerResponseError(t *testing.T) {
+	p, ff := newProv(t)
+	if _, err := p.DriverCreateBucket(context.Background(), &cosispec.DriverCreateBucketRequest{
+		Name:       "rejected",
+		Parameters: map[string]string{"disk": "ssd"},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	ff.deleteEntryResponseError = "delete file /buckets/no entry is found: recursive delete failed"
+
+	resp, err := p.DriverDeleteBucket(context.Background(), &cosispec.DriverDeleteBucketRequest{
+		BucketId: "rejected",
+	})
+
+	if resp != nil {
+		t.Fatalf("response=%v want nil", resp)
+	}
+	if got := status.Code(err); got != codes.Internal {
+		t.Fatalf("status code=%v want %v", got, codes.Internal)
+	}
+	if _, exists := ff.buckets["rejected"]; !exists {
+		t.Fatal("bucket was removed after the filer rejected deletion")
+	}
+	fc := filer.NewFilerConf()
+	if err := fc.LoadFromBytes(ff.files[ff.fileKey(filer.DirectoryEtcSeaweedFS, filer.FilerConfName)]); err != nil {
+		t.Fatalf("parse filer conf: %v", err)
+	}
+	if _, found := fc.GetLocationConf("/buckets/rejected/"); !found {
+		t.Fatal("PathConf was removed after the filer rejected deletion")
+	}
+}
+
+func TestDriverDeleteBucketNotFoundCleansFilerConf(t *testing.T) {
+	cases := []struct {
+		name          string
+		responseError string
+	}{
+		{name: "RPC not found"},
+		{name: "response not found", responseError: filer_pb.ErrNotFound.Error()},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p, ff := newProv(t)
+			const bucket = "stale-conf"
+			if _, err := p.DriverCreateBucket(context.Background(), &cosispec.DriverCreateBucketRequest{
+				Name:       bucket,
+				Parameters: map[string]string{"disk": "ssd"},
+			}); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+
+			// Simulate an earlier attempt that removed the bucket entry but
+			// stopped before deleting its path-specific FilerConf setting.
+			delete(ff.buckets, bucket)
+			delete(ff.entries, ff.fileKey("/buckets", bucket))
+			ff.deleteEntryResponseError = c.responseError
+
+			if _, err := p.DriverDeleteBucket(context.Background(), &cosispec.DriverDeleteBucketRequest{
+				BucketId: bucket,
+			}); err != nil {
+				t.Fatalf("delete: %v", err)
+			}
+
+			data := ff.files[ff.fileKey(filer.DirectoryEtcSeaweedFS, filer.FilerConfName)]
+			fc := filer.NewFilerConf()
+			if err := fc.LoadFromBytes(data); err != nil {
+				t.Fatalf("parse filer conf: %v", err)
+			}
+			for _, loc := range fc.ToProto().Locations {
+				if loc.LocationPrefix == "/buckets/"+bucket+"/" {
+					t.Fatal("stale PathConf remains after idempotent delete")
+				}
+			}
+		})
+	}
+}
+
+func TestDriverDeleteBucketDoesNotIgnoreRecursiveErrors(t *testing.T) {
+	p, ff := newProv(t)
+	if _, err := p.DriverCreateBucket(context.Background(), &cosispec.DriverCreateBucketRequest{
+		Name: "strict-delete",
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if _, err := p.DriverDeleteBucket(context.Background(), &cosispec.DriverDeleteBucketRequest{
+		BucketId: "strict-delete",
+	}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	if ff.lastDeleteEntryRequest == nil {
+		t.Fatal("delete request was not recorded")
+	}
+	if ff.lastDeleteEntryRequest.IgnoreRecursiveError {
+		t.Fatal("recursive delete errors must not be ignored")
+	}
 }
 
 func TestDriverGrantBucketAccess(t *testing.T) {
@@ -820,6 +954,75 @@ func TestDriverRevokeBucketAccess_NonexistentUser(t *testing.T) {
 	}
 	if data := ff.iam(); len(data) != 0 {
 		t.Fatalf("identity.json recreated by revoke: %s", data)
+	}
+}
+
+func TestDriverRevokeBucketAccessDoesNotIgnoreNotFoundTextInResponseError(t *testing.T) {
+	p, ff := newProv(t)
+	ff.deleteEntryResponseError = "delete file /etc/iam/identities/no entry is found.json: filer store unavailable"
+
+	resp, err := p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{AccountId: "no entry is found"})
+
+	if resp != nil {
+		t.Fatalf("response=%v want nil", resp)
+	}
+	if got := status.Code(err); got != codes.Internal {
+		t.Fatalf("status code=%v want %v", got, codes.Internal)
+	}
+}
+
+func TestLegacyMissingEntryUpdateFallsBackToCreate(t *testing.T) {
+	p, ff := newProv(t)
+	ff.legacyUpdateNotFound = true
+
+	if _, err := p.DriverCreateBucket(context.Background(), &cosispec.DriverCreateBucketRequest{
+		Name:       "legacy",
+		Parameters: map[string]string{"disk": "ssd"},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := p.DriverGrantBucketAccess(context.Background(), &cosispec.DriverGrantBucketAccessRequest{
+		BucketId: "legacy",
+		Name:     "u",
+	}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	for _, key := range []string{
+		ff.fileKey(filer.DirectoryEtcSeaweedFS, filer.FilerConfName),
+		ff.fileKey(filer.IamConfigDirectory, filer.IamIdentityFile),
+		ff.fileKey(filer.IamConfigDirectory+"/identities", "u.json"),
+	} {
+		if _, ok := ff.files[key]; !ok {
+			t.Errorf("%s was not created", key)
+		}
+	}
+}
+
+func TestFilerNotFoundErrorShapes(t *testing.T) {
+	const conf = "/etc/seaweedfs/filer.conf"
+	cases := []struct {
+		name          string
+		err           error
+		notFound      bool
+		missingUpdate bool
+	}{
+		{"lookup sentinel over grpc", status.Error(codes.Unknown, filer_pb.ErrNotFound.Error()), true, true},
+		{"grpc NotFound code", status.Error(codes.NotFound, "not found "+conf+": "+filer_pb.ErrNotFound.Error()), true, true},
+		{"wrapped sentinel", fmt.Errorf("lookup: %w", filer_pb.ErrNotFound), true, true},
+		{"legacy update of a missing entry", status.Error(codes.Unknown, "not found "+conf+": "+filer_pb.ErrNotFound.Error()), false, true},
+		{"legacy update store failure", status.Error(codes.Unknown, "not found "+conf+": leveldb: closed"), false, false},
+		{"not-found text inside another error", status.Error(codes.Unknown, "list /buckets/"+filer_pb.ErrNotFound.Error()+": i/o timeout"), false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isNotFoundError(c.err); got != c.notFound {
+				t.Errorf("isNotFoundError=%v want %v", got, c.notFound)
+			}
+			if got := isMissingEntryUpdateError(c.err, filer.DirectoryEtcSeaweedFS, filer.FilerConfName); got != c.missingUpdate {
+				t.Errorf("isMissingEntryUpdateError=%v want %v", got, c.missingUpdate)
+			}
+		})
 	}
 }
 
