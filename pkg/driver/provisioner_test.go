@@ -21,6 +21,7 @@ package driver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"reflect"
 	"sort"
@@ -956,6 +957,33 @@ func TestDriverRevokeBucketAccessDoesNotIgnoreNotFoundTextInResponseError(t *tes
 	}
 	if got := status.Code(err); got != codes.Internal {
 		t.Fatalf("status code=%v want %v", got, codes.Internal)
+	}
+}
+
+func TestFilerNotFoundErrorShapes(t *testing.T) {
+	const conf = "/etc/seaweedfs/filer.conf"
+	cases := []struct {
+		name          string
+		err           error
+		notFound      bool
+		missingUpdate bool
+	}{
+		{"lookup sentinel over grpc", status.Error(codes.Unknown, filer_pb.ErrNotFound.Error()), true, true},
+		{"grpc NotFound code", status.Error(codes.NotFound, "not found "+conf+": "+filer_pb.ErrNotFound.Error()), true, true},
+		{"wrapped sentinel", fmt.Errorf("lookup: %w", filer_pb.ErrNotFound), true, true},
+		{"legacy update of a missing entry", status.Error(codes.Unknown, "not found "+conf+": "+filer_pb.ErrNotFound.Error()), false, true},
+		{"legacy update store failure", status.Error(codes.Unknown, "not found "+conf+": leveldb: closed"), false, false},
+		{"not-found text inside another error", status.Error(codes.Unknown, "list /buckets/"+filer_pb.ErrNotFound.Error()+": i/o timeout"), false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isNotFoundError(c.err); got != c.notFound {
+				t.Errorf("isNotFoundError=%v want %v", got, c.notFound)
+			}
+			if got := isMissingEntryUpdateError(c.err, filer.DirectoryEtcSeaweedFS, filer.FilerConfName); got != c.missingUpdate {
+				t.Errorf("isMissingEntryUpdateError=%v want %v", got, c.missingUpdate)
+			}
+		})
 	}
 }
 
