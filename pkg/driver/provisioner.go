@@ -214,16 +214,10 @@ func (s *provisionerServer) deleteBucket(ctx context.Context, id string) error {
 			IsRecursive:          true,
 			IgnoreRecursiveError: false,
 		})
-		if err != nil {
-			if isNotFoundError(err) {
-				return nil // already gone — idempotent delete
-			}
+		if err != nil && !isNotFoundError(err) {
 			return err
 		}
-		if err := deleteEntryResponseError(resp); err != nil {
-			if isNotFoundError(err) {
-				return nil // already gone — idempotent delete
-			}
+		if err := deleteEntryResponseError(resp); err != nil && !isNotFoundError(err) {
 			return fmt.Errorf("delete bucket entry: %w", err)
 		}
 		fc, err := readFilerConf(ctx, c)
@@ -421,7 +415,7 @@ func readFilerConf(ctx context.Context, c filer_pb.SeaweedFilerClient) (*filer.F
 		Name:      filer.FilerConfName,
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "no entry is found") {
+		if isNotFoundError(err) {
 			return fc, nil
 		}
 		return nil, fmt.Errorf("read filer conf: %w", err)
@@ -451,7 +445,7 @@ func saveFilerConf(ctx context.Context, c filer_pb.SeaweedFilerClient, fc *filer
 			IsDirectory: false,
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "no entry is found") {
+	if err == nil || !isMissingEntryUpdateError(err, filer.DirectoryEtcSeaweedFS, filer.FilerConfName) {
 		return err
 	}
 	_, err = filer_pb.CreateEntryWithResponse(ctx, c, &filer_pb.CreateEntryRequest{
@@ -495,7 +489,7 @@ func (s *provisionerServer) saveS3Configuration(ctx context.Context, data []byte
 				IsDirectory: false,
 			},
 		})
-		if err == nil || !isNotFoundError(err) {
+		if err == nil || !isMissingEntryUpdateError(err, filer.IamConfigDirectory, filer.IamIdentityFile) {
 			return err
 		}
 		_, err = filer_pb.CreateEntryWithResponse(ctx, c, &filer_pb.CreateEntryRequest{
@@ -565,7 +559,7 @@ func (s *provisionerServer) saveS3Identity(ctx context.Context, name string, dat
 		if err == nil {
 			return nil
 		}
-		if !isNotFoundError(err) {
+		if !isMissingEntryUpdateError(err, dir, name) {
 			return err
 		}
 		_, err = filer_pb.CreateEntryWithResponse(ctx, c, &filer_pb.CreateEntryRequest{
@@ -668,19 +662,43 @@ func (s *provisionerServer) configureS3Access(ctx context.Context, user, ak, sk 
 /*                               utilities                                    */
 /* -------------------------------------------------------------------------- */
 
-// isNotFoundError checks whether err represents a "not found" condition.
-// It first checks for a proper gRPC NotFound status code, then falls back to
-// string matching for SeaweedFS filer which returns plain error strings.
+// isNotFoundError recognizes structured not-found errors and the exact legacy
+// SeaweedFS sentinel. It deliberately avoids substring matching because paths
+// and entry names can contain error-like text.
 func isNotFoundError(err error) bool {
-	if status.Code(err) == codes.NotFound {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, filer_pb.ErrNotFound) || status.Code(err) == codes.NotFound {
 		return true
 	}
-	return strings.Contains(err.Error(), "no entry is found")
+	if st, ok := status.FromError(err); ok {
+		return st.Message() == filer_pb.ErrNotFound.Error()
+	}
+	return err.Error() == filer_pb.ErrNotFound.Error()
+}
+
+// isMissingEntryUpdateError matches the complete legacy error emitted when
+// UpdateEntry targets a missing entry. The full-message comparison preserves
+// compatibility without letting an entry name spoof a not-found result.
+func isMissingEntryUpdateError(err error, directory, name string) bool {
+	if isNotFoundError(err) {
+		return true
+	}
+	expected := "not found " + strings.TrimSuffix(directory, "/") + "/" + name +
+		": " + filer_pb.ErrNotFound.Error()
+	if st, ok := status.FromError(err); ok {
+		return st.Code() == codes.Unknown && st.Message() == expected
+	}
+	return err.Error() == expected
 }
 
 func deleteEntryResponseError(resp *filer_pb.DeleteEntryResponse) error {
 	if resp == nil || resp.Error == "" {
 		return nil
+	}
+	if resp.Error == filer_pb.ErrNotFound.Error() {
+		return filer_pb.ErrNotFound
 	}
 	return errors.New(resp.Error)
 }

@@ -481,7 +481,7 @@ func TestDriverDeleteBucketReportsFilerResponseError(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	ff.deleteEntryResponseError = "recursive delete failed"
+	ff.deleteEntryResponseError = "delete file /buckets/no entry is found: recursive delete failed"
 
 	resp, err := p.DriverDeleteBucket(context.Background(), &cosispec.DriverDeleteBucketRequest{
 		BucketId: "rejected",
@@ -495,6 +495,52 @@ func TestDriverDeleteBucketReportsFilerResponseError(t *testing.T) {
 	}
 	if _, exists := ff.buckets["rejected"]; !exists {
 		t.Fatal("bucket was removed after the filer rejected deletion")
+	}
+}
+
+func TestDriverDeleteBucketNotFoundCleansFilerConf(t *testing.T) {
+	cases := []struct {
+		name          string
+		responseError string
+	}{
+		{name: "RPC not found"},
+		{name: "response not found", responseError: filer_pb.ErrNotFound.Error()},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p, ff := newProv(t)
+			const bucket = "stale-conf"
+			if _, err := p.DriverCreateBucket(context.Background(), &cosispec.DriverCreateBucketRequest{
+				Name:       bucket,
+				Parameters: map[string]string{"disk": "ssd"},
+			}); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+
+			// Simulate an earlier attempt that removed the bucket entry but
+			// stopped before deleting its path-specific FilerConf setting.
+			delete(ff.buckets, bucket)
+			delete(ff.entries, ff.fileKey("/buckets", bucket))
+			ff.deleteEntryResponseError = c.responseError
+
+			if _, err := p.DriverDeleteBucket(context.Background(), &cosispec.DriverDeleteBucketRequest{
+				BucketId: bucket,
+			}); err != nil {
+				t.Fatalf("delete: %v", err)
+			}
+
+			data := ff.files[ff.fileKey(filer.DirectoryEtcSeaweedFS, filer.FilerConfName)]
+			fc := filer.NewFilerConf()
+			if err := fc.LoadFromBytes(data); err != nil {
+				t.Fatalf("parse filer conf: %v", err)
+			}
+			for _, loc := range fc.ToProto().Locations {
+				if loc.LocationPrefix == "/buckets/"+bucket+"/" {
+					t.Fatal("stale PathConf remains after idempotent delete")
+				}
+			}
+		})
 	}
 }
 
@@ -895,6 +941,21 @@ func TestDriverRevokeBucketAccess_NonexistentUser(t *testing.T) {
 	}
 	if data := ff.iam(); len(data) != 0 {
 		t.Fatalf("identity.json recreated by revoke: %s", data)
+	}
+}
+
+func TestDriverRevokeBucketAccessDoesNotIgnoreNotFoundTextInResponseError(t *testing.T) {
+	p, ff := newProv(t)
+	ff.deleteEntryResponseError = "delete file /etc/iam/identities/no entry is found.json: filer store unavailable"
+
+	resp, err := p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{AccountId: "no entry is found"})
+
+	if resp != nil {
+		t.Fatalf("response=%v want nil", resp)
+	}
+	if got := status.Code(err); got != codes.Internal {
+		t.Fatalf("status code=%v want %v", got, codes.Internal)
 	}
 }
 
