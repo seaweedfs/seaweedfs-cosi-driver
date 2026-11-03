@@ -8,6 +8,16 @@ on a Kubernetes cluster.
 You can deploy a full COSI installation for SeaweedFS following the
 instructions for the [SeaweedFS's Helm charts](https://github.com/seaweedfs/seaweedfs/tree/master/k8s/charts/seaweedfs).
 
+## Filer mutation failures
+
+The driver treats both gRPC transport errors and errors reported in Filer
+mutation responses as operation failures. Recursive bucket deletion also
+fails when a child entry cannot be deleted, while deleting an already missing
+bucket remains idempotent.
+
+See [issue #19](https://github.com/seaweedfs/seaweedfs-cosi-driver/issues/19)
+and [pull request #20](https://github.com/seaweedfs/seaweedfs-cosi-driver/pull/20).
+
 ## Building
 
 The driver code can be compiled using:
