@@ -45,9 +45,12 @@ import (
 
 type fakeFiler struct {
 	filer_pb.UnimplementedSeaweedFilerServer
-	files   map[string][]byte
-	buckets map[string]*filer_pb.Entry
-	entries map[string]*filer_pb.Entry
+	files                    map[string][]byte
+	buckets                  map[string]*filer_pb.Entry
+	entries                  map[string]*filer_pb.Entry
+	createEntryResponseError string
+	deleteEntryResponseError string
+	lastDeleteEntryRequest   *filer_pb.DeleteEntryRequest
 }
 
 func (f *fakeFiler) fileKey(dir, name string) string { return dir + "/" + name }
@@ -60,6 +63,9 @@ func (f *fakeFiler) putEntry(dir string, e *filer_pb.Entry) {
 }
 
 func (f *fakeFiler) CreateEntry(_ context.Context, in *filer_pb.CreateEntryRequest) (*filer_pb.CreateEntryResponse, error) {
+	if f.createEntryResponseError != "" {
+		return &filer_pb.CreateEntryResponse{Error: f.createEntryResponseError}, nil
+	}
 	if f.files == nil {
 		f.files = make(map[string][]byte)
 	}
@@ -130,6 +136,10 @@ func (f *fakeFiler) ListEntries(in *filer_pb.ListEntriesRequest, stream filer_pb
 }
 
 func (f *fakeFiler) DeleteEntry(_ context.Context, in *filer_pb.DeleteEntryRequest) (*filer_pb.DeleteEntryResponse, error) {
+	f.lastDeleteEntryRequest = in
+	if f.deleteEntryResponseError != "" {
+		return &filer_pb.DeleteEntryResponse{Error: f.deleteEntryResponseError}, nil
+	}
 	key := f.fileKey(in.Directory, in.Name)
 	if in.Directory == "/buckets" {
 		if _, ok := f.buckets[in.Name]; !ok {
@@ -323,6 +333,25 @@ func TestDriverCreateBucket(t *testing.T) {
 	}
 }
 
+func TestDriverCreateBucketReportsFilerResponseError(t *testing.T) {
+	p, ff := newProv(t)
+	ff.createEntryResponseError = "filer is read only"
+
+	resp, err := p.DriverCreateBucket(context.Background(), &cosispec.DriverCreateBucketRequest{
+		Name: "rejected",
+	})
+
+	if resp != nil {
+		t.Fatalf("response=%v want nil", resp)
+	}
+	if got := status.Code(err); got != codes.Internal {
+		t.Fatalf("status code=%v want %v", got, codes.Internal)
+	}
+	if _, exists := ff.buckets["rejected"]; exists {
+		t.Fatal("bucket was recorded after the filer rejected creation")
+	}
+}
+
 func TestDriverCreateBucketSequentialPreservesAll(t *testing.T) {
 	p, ff := newProv(t)
 	confKey := filer.DirectoryEtcSeaweedFS + "/" + filer.FilerConfName
@@ -443,6 +472,52 @@ func TestDriverDeleteBucket(t *testing.T) {
 			t.Error("FilerConf should not be created when deleting a bucket without params")
 		}
 	})
+}
+
+func TestDriverDeleteBucketReportsFilerResponseError(t *testing.T) {
+	p, ff := newProv(t)
+	if _, err := p.DriverCreateBucket(context.Background(), &cosispec.DriverCreateBucketRequest{
+		Name: "rejected",
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	ff.deleteEntryResponseError = "recursive delete failed"
+
+	resp, err := p.DriverDeleteBucket(context.Background(), &cosispec.DriverDeleteBucketRequest{
+		BucketId: "rejected",
+	})
+
+	if resp != nil {
+		t.Fatalf("response=%v want nil", resp)
+	}
+	if got := status.Code(err); got != codes.Internal {
+		t.Fatalf("status code=%v want %v", got, codes.Internal)
+	}
+	if _, exists := ff.buckets["rejected"]; !exists {
+		t.Fatal("bucket was removed after the filer rejected deletion")
+	}
+}
+
+func TestDriverDeleteBucketDoesNotIgnoreRecursiveErrors(t *testing.T) {
+	p, ff := newProv(t)
+	if _, err := p.DriverCreateBucket(context.Background(), &cosispec.DriverCreateBucketRequest{
+		Name: "strict-delete",
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if _, err := p.DriverDeleteBucket(context.Background(), &cosispec.DriverDeleteBucketRequest{
+		BucketId: "strict-delete",
+	}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	if ff.lastDeleteEntryRequest == nil {
+		t.Fatal("delete request was not recorded")
+	}
+	if ff.lastDeleteEntryRequest.IgnoreRecursiveError {
+		t.Fatal("recursive delete errors must not be ignored")
+	}
 }
 
 func TestDriverGrantBucketAccess(t *testing.T) {
