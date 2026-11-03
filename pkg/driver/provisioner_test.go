@@ -50,6 +50,7 @@ type fakeFiler struct {
 	buckets                  map[string]*filer_pb.Entry
 	entries                  map[string]*filer_pb.Entry
 	createEntryResponseError string
+	legacyUpdateNotFound     bool
 	deleteEntryResponseError string
 	lastDeleteEntryRequest   *filer_pb.DeleteEntryRequest
 }
@@ -86,6 +87,9 @@ func (f *fakeFiler) CreateEntry(_ context.Context, in *filer_pb.CreateEntryReque
 func (f *fakeFiler) UpdateEntry(_ context.Context, in *filer_pb.UpdateEntryRequest) (*filer_pb.UpdateEntryResponse, error) {
 	key := f.fileKey(in.Directory, in.Entry.Name)
 	if _, ok := f.files[key]; !ok {
+		if f.legacyUpdateNotFound {
+			return nil, status.Error(codes.Unknown, "not found "+key+": "+filer_pb.ErrNotFound.Error())
+		}
 		return nil, status.Error(codes.NotFound, "no entry is found in filer store")
 	}
 	f.files[key] = in.Entry.Content
@@ -957,6 +961,33 @@ func TestDriverRevokeBucketAccessDoesNotIgnoreNotFoundTextInResponseError(t *tes
 	}
 	if got := status.Code(err); got != codes.Internal {
 		t.Fatalf("status code=%v want %v", got, codes.Internal)
+	}
+}
+
+func TestLegacyMissingEntryUpdateFallsBackToCreate(t *testing.T) {
+	p, ff := newProv(t)
+	ff.legacyUpdateNotFound = true
+
+	if _, err := p.DriverCreateBucket(context.Background(), &cosispec.DriverCreateBucketRequest{
+		Name:       "legacy",
+		Parameters: map[string]string{"disk": "ssd"},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := p.DriverGrantBucketAccess(context.Background(), &cosispec.DriverGrantBucketAccessRequest{
+		BucketId: "legacy",
+		Name:     "u",
+	}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	for _, key := range []string{
+		ff.fileKey(filer.DirectoryEtcSeaweedFS, filer.FilerConfName),
+		ff.fileKey(filer.IamConfigDirectory, filer.IamIdentityFile),
+		ff.fileKey(filer.IamConfigDirectory+"/identities", "u.json"),
+	} {
+		if _, ok := ff.files[key]; !ok {
+			t.Errorf("%s was not created", key)
+		}
 	}
 }
 
