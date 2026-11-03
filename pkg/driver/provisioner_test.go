@@ -482,7 +482,8 @@ func TestDriverDeleteBucket(t *testing.T) {
 func TestDriverDeleteBucketReportsFilerResponseError(t *testing.T) {
 	p, ff := newProv(t)
 	if _, err := p.DriverCreateBucket(context.Background(), &cosispec.DriverCreateBucketRequest{
-		Name: "rejected",
+		Name:       "rejected",
+		Parameters: map[string]string{"disk": "ssd"},
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -500,6 +501,13 @@ func TestDriverDeleteBucketReportsFilerResponseError(t *testing.T) {
 	}
 	if _, exists := ff.buckets["rejected"]; !exists {
 		t.Fatal("bucket was removed after the filer rejected deletion")
+	}
+	fc := filer.NewFilerConf()
+	if err := fc.LoadFromBytes(ff.files[ff.fileKey(filer.DirectoryEtcSeaweedFS, filer.FilerConfName)]); err != nil {
+		t.Fatalf("parse filer conf: %v", err)
+	}
+	if _, found := fc.GetLocationConf("/buckets/rejected/"); !found {
+		t.Fatal("PathConf was removed after the filer rejected deletion")
 	}
 }
 
