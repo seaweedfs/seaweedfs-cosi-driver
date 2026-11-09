@@ -274,6 +274,26 @@ func (s *provisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 		return nil, status.Error(codes.InvalidArgument, "invalid user or bucket name")
 	}
 
+	// public-read grants no key: it opens the bucket to unsigned reads
+	// through the gateway's shared anonymous identity.
+	if req.GetParameters()["accessPolicy"] == publicReadPolicy {
+		if err := s.setAnonymousRead(ctx, bucket, true); err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		klog.InfoS("granted anonymous read access", "bucket", bucket)
+		return &cosispec.DriverGrantBucketAccessResponse{
+			AccountId: s3_constants.AccountAnonymousId,
+			Credentials: map[string]*cosispec.CredentialDetails{
+				"s3": {Secrets: map[string]string{
+					"accessKeyID":     "",
+					"accessSecretKey": "",
+					"endpoint":        s.endpoint,
+					"region":          s.region,
+				}},
+			},
+		}, nil
+	}
+
 	// determine IAM actions based on accessPolicy parameter
 	actions, err := actionsForPolicy(req.GetParameters()["accessPolicy"])
 	if err != nil {
@@ -388,6 +408,19 @@ func (s *provisionerServer) DriverRevokeBucketAccess(ctx context.Context, req *c
 	user := req.GetAccountId()
 	if user == "" || strings.Contains(user, "/") {
 		return nil, status.Error(codes.InvalidArgument, "invalid user name")
+	}
+	// The anonymous identity is shared by every public bucket: revoking one
+	// bucket's public read must leave the others' grants in place.
+	if user == s3_constants.AccountAnonymousId {
+		bucket := req.GetBucketId()
+		if bucket == "" {
+			return nil, status.Error(codes.InvalidArgument, "invalid bucket name")
+		}
+		if err := s.setAnonymousRead(ctx, bucket, false); err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		klog.InfoS("revoked anonymous read access", "bucket", bucket)
+		return &cosispec.DriverRevokeBucketAccessResponse{}, nil
 	}
 	if err := s.revokeBucketAccess(ctx, user); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -778,9 +811,105 @@ var (
 	}
 )
 
+// publicReadPolicy is the accessPolicy that opens a bucket to unsigned
+// GET and HEAD of its objects. It adds Read:<bucket> to the gateway's
+// anonymous identity; listing and writes stay closed to anonymous callers.
+const publicReadPolicy = "public-read"
+
+// setAnonymousRead adds (enable) or removes Read:<bucket> on the anonymous
+// identity, in both IAM layouts, leaving every other bucket's grant intact.
+func (s *provisionerServer) setAnonymousRead(ctx context.Context, bucket string, enable bool) error {
+	name := s3_constants.AccountAnonymousId
+	action := "Read:" + bucket
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var cfgBuf bytes.Buffer
+	if err := s.readS3Configuration(ctx, &cfgBuf); err != nil {
+		return err
+	}
+	cfg := &iam_pb.S3ApiConfiguration{}
+	if cfgBuf.Len() > 0 {
+		if err := filer.ParseS3ConfigurationFromBytes(cfgBuf.Bytes(), cfg); err != nil {
+			return err
+		}
+	}
+	// A read failure must not pass for "no identity": writing blind would
+	// drop the public reads of every other bucket.
+	idData, err := s.readS3Identity(ctx, name+".json")
+	if err != nil {
+		return err
+	}
+
+	var legacy *iam_pb.Identity
+	for _, id := range cfg.Identities {
+		if id.Name == name {
+			legacy = id
+			break
+		}
+	}
+	var perIdentity *iam_pb.Identity
+	if len(idData) > 0 {
+		perIdentity = &iam_pb.Identity{}
+		if err := json.Unmarshal(idData, perIdentity); err != nil || perIdentity.Name != name {
+			return fmt.Errorf("parse identity file %s.json: unexpected content", name)
+		}
+	}
+
+	if !enable && legacy == nil && perIdentity == nil {
+		return nil
+	}
+
+	id := &iam_pb.Identity{Name: name}
+	if legacy != nil {
+		id = legacy
+	}
+	if perIdentity != nil {
+		id.Actions = mergeActions(id.Actions, perIdentity.Actions)
+		id.Credentials = mergeCredentials(id.Credentials, perIdentity.Credentials)
+	}
+	if enable {
+		id.Actions = mergeActions(id.Actions, []string{action})
+	} else {
+		id.Actions = slices.DeleteFunc(id.Actions, func(a string) bool { return a == action })
+	}
+
+	// Write the legacy file on a grant, as DriverGrantBucketAccess does, so
+	// pre-4.08 gateways see it; on a revoke only touch it when it already
+	// carries the identity, never recreating a file the filer migrated away.
+	if enable || legacy != nil {
+		if legacy == nil {
+			cfg.Identities = append(cfg.Identities, id)
+		}
+		cfgBuf.Reset()
+		filer.ProtoToText(&cfgBuf, cfg)
+		if err := s.saveS3Configuration(ctx, cfgBuf.Bytes()); err != nil {
+			return err
+		}
+	}
+
+	if enable || perIdentity != nil {
+		idJSON, err := json.Marshal(id)
+		if err != nil {
+			return err
+		}
+		if err := s.saveS3Identity(ctx, name+".json", idJSON); err != nil {
+			// On a grant the legacy write already delivers it; on a revoke a
+			// stale per-identity file would keep the bucket public.
+			if !enable {
+				return err
+			}
+			klog.ErrorS(err, "failed to write per-identity file", "user", name)
+		}
+	}
+	return nil
+}
+
 // actionsForPolicy returns the IAM action names for the given access policy.
 // Supported values: "readonly", "readwrite", "readwrite-governance-bypass",
-// "" (defaults to readwrite).
+// "" (defaults to readwrite). "public-read" issues no key and is handled by
+// setAnonymousRead before this is called.
 //
 // readwrite-governance-bypass lets the key delete or overwrite objects under
 // GOVERNANCE retention when the request carries
@@ -796,7 +925,7 @@ func actionsForPolicy(policy string) ([]string, error) {
 	case "readwrite-governance-bypass":
 		return append(readwrite, s3_constants.ACTION_BYPASS_GOVERNANCE_RETENTION), nil
 	default:
-		return nil, fmt.Errorf("unsupported accessPolicy %q, must be \"readonly\", \"readwrite\" or \"readwrite-governance-bypass\"", policy)
+		return nil, fmt.Errorf("unsupported accessPolicy %q, must be \"readonly\", \"readwrite\", \"readwrite-governance-bypass\" or \"public-read\"", policy)
 	}
 }
 

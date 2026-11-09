@@ -107,3 +107,27 @@ authenticationType: KEY
 parameters:
   accessPolicy: readwrite-governance-bypass
 ```
+
+### Serve a bucket publicly
+
+`accessPolicy: public-read` issues no key. It opens the bucket to
+unsigned `GET` and `HEAD` of its objects by adding `Read:<bucket>` to
+the gateway's `anonymous` identity, so an object is served at
+`<endpoint>/<bucket>/<key>` without credentials. Anonymous callers
+still cannot list the bucket or write to it.
+
+The `anonymous` identity is shared by every public bucket: deleting the
+BucketAccess removes only this bucket's `Read` action, and other
+buckets stay public. The credentials Secret carries the endpoint and
+region, with empty keys.
+
+```yaml
+kind: BucketAccessClass
+apiVersion: objectstorage.k8s.io/v1alpha1
+metadata:
+  name: sample-bac-public-read
+driverName: seaweedfs.objectstorage.k8s.io
+authenticationType: KEY
+parameters:
+  accessPolicy: public-read
+```
