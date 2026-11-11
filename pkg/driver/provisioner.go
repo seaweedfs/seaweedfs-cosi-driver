@@ -861,13 +861,15 @@ func (s *provisionerServer) setAnonymousRead(ctx context.Context, bucket string,
 		return nil
 	}
 
-	id := &iam_pb.Identity{Name: name}
-	if legacy != nil {
-		id = legacy
-	}
-	if perIdentity != nil {
+	id := legacy
+	if id == nil {
+		id = perIdentity
+	} else if perIdentity != nil {
 		id.Actions = mergeActions(id.Actions, perIdentity.Actions)
 		id.Credentials = mergeCredentials(id.Credentials, perIdentity.Credentials)
+	}
+	if id == nil {
+		id = &iam_pb.Identity{Name: name}
 	}
 	if enable {
 		id.Actions = mergeActions(id.Actions, []string{action})
