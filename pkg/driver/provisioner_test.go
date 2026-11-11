@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1522,4 +1523,171 @@ func TestConcurrentGrantAccess(t *testing.T) {
 		}
 	}
 	t.Fatal("identity 'user' not found in IAM config")
+}
+
+/* ----------------------------- public-read policy ---------------------------- */
+
+var publicRead = map[string]string{"accessPolicy": "public-read"}
+
+// anonymousFileActions returns the sorted actions of the per-identity
+// anonymous.json, and whether the file exists.
+func anonymousFileActions(t *testing.T, ff *fakeFiler) ([]string, bool) {
+	t.Helper()
+	data, ok := ff.files[filer.IamConfigDirectory+"/identities/anonymous.json"]
+	if !ok {
+		return nil, false
+	}
+	id := &iam_pb.Identity{}
+	if err := json.Unmarshal(data, id); err != nil {
+		t.Fatalf("unmarshal anonymous.json: %v", err)
+	}
+	actions := slices.Clone(id.Actions)
+	sort.Strings(actions)
+	return actions, true
+}
+
+func TestDriverGrantBucketAccessPublicRead(t *testing.T) {
+	p, ff := newProv(t)
+	resp, err := p.DriverGrantBucketAccess(context.Background(),
+		&cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u", Parameters: publicRead})
+	if err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if resp.AccountId != "anonymous" {
+		t.Errorf("AccountId=%q want anonymous", resp.AccountId)
+	}
+	secrets := resp.Credentials["s3"].GetSecrets()
+	if secrets["accessKeyID"] != "" || secrets["accessSecretKey"] != "" {
+		t.Errorf("public-read must issue no key, got %v", secrets)
+	}
+	if got, want := iamActions(t, ff, "anonymous"), []string{"Read:b"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("legacy anonymous actions=%v want %v", got, want)
+	}
+	if got, ok := anonymousFileActions(t, ff); !ok || !reflect.DeepEqual(got, []string{"Read:b"}) {
+		t.Errorf("anonymous.json actions=%v (exists=%v) want [Read:b]", got, ok)
+	}
+	cfg := &iam_pb.S3ApiConfiguration{}
+	if err := filer.ParseS3ConfigurationFromBytes(ff.iam(), cfg); err != nil {
+		t.Fatalf("parse IAM config: %v", err)
+	}
+	for _, id := range cfg.Identities {
+		if id.Name == "u" {
+			t.Errorf("public-read must not create the requested identity %q", id.Name)
+		}
+		if id.Name == "anonymous" && len(id.Credentials) != 0 {
+			t.Errorf("anonymous identity got credentials: %v", id.Credentials)
+		}
+	}
+}
+
+func TestDriverGrantBucketAccessPublicReadKeepsExistingGrants(t *testing.T) {
+	p, ff := newProv(t)
+	// A bucket opened earlier by hand (weed shell s3.anonymous.set) on a
+	// migrated filer: the identity lives only in anonymous.json.
+	data, _ := json.Marshal(&iam_pb.Identity{Name: "anonymous", Actions: []string{"Read:manual"}})
+	ff.files[filer.IamConfigDirectory+"/identities/anonymous.json"] = data
+
+	if _, err := p.DriverGrantBucketAccess(context.Background(),
+		&cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u", Parameters: publicRead}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	want := []string{"Read:b", "Read:manual"}
+	if got, _ := anonymousFileActions(t, ff); !reflect.DeepEqual(got, want) {
+		t.Errorf("anonymous.json actions=%v want %v", got, want)
+	}
+	if got := iamActions(t, ff, "anonymous"); !reflect.DeepEqual(got, want) {
+		t.Errorf("legacy anonymous actions=%v want %v", got, want)
+	}
+}
+
+func TestDriverRevokeBucketAccessPublicReadKeepsOtherBuckets(t *testing.T) {
+	p, ff := newProv(t)
+	for _, b := range []string{"b1", "b2"} {
+		if _, err := p.DriverGrantBucketAccess(context.Background(),
+			&cosispec.DriverGrantBucketAccessRequest{BucketId: b, Name: "u-" + b, Parameters: publicRead}); err != nil {
+			t.Fatalf("grant %s: %v", b, err)
+		}
+	}
+	if _, err := p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{BucketId: "b1", AccountId: "anonymous"}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	want := []string{"Read:b2"}
+	if got := iamActions(t, ff, "anonymous"); !reflect.DeepEqual(got, want) {
+		t.Errorf("legacy anonymous actions=%v want %v", got, want)
+	}
+	if got, ok := anonymousFileActions(t, ff); !ok || !reflect.DeepEqual(got, want) {
+		t.Errorf("anonymous.json actions=%v (exists=%v) want %v", got, ok, want)
+	}
+}
+
+func TestDriverRevokeBucketAccessPublicReadMigratedLayout(t *testing.T) {
+	p, ff := newProv(t)
+	data, _ := json.Marshal(&iam_pb.Identity{Name: "anonymous", Actions: []string{"Read:b", "Read:other"}})
+	ff.files[filer.IamConfigDirectory+"/identities/anonymous.json"] = data
+
+	if _, err := p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{BucketId: "b", AccountId: "anonymous"}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if got, ok := anonymousFileActions(t, ff); !ok || !reflect.DeepEqual(got, []string{"Read:other"}) {
+		t.Errorf("anonymous.json actions=%v (exists=%v) want [Read:other]", got, ok)
+	}
+	if data := ff.iam(); len(data) != 0 {
+		t.Fatalf("identity.json recreated by revoke: %s", data)
+	}
+}
+
+func TestDriverRevokeBucketAccessPublicReadNothingGranted(t *testing.T) {
+	p, ff := newProv(t)
+	if _, err := p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{BucketId: "b", AccountId: "anonymous"}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if len(ff.files) != 0 {
+		t.Errorf("revoke with nothing granted wrote %d files", len(ff.files))
+	}
+}
+
+func TestDriverRevokeBucketAccessPublicReadNeedsBucket(t *testing.T) {
+	p, _ := newProv(t)
+	_, err := p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{AccountId: "anonymous"})
+	if got := status.Code(err); got != codes.InvalidArgument {
+		t.Fatalf("status code=%v want InvalidArgument", got)
+	}
+}
+
+func TestDriverBucketAccessPublicReadKeepsAnonymousFields(t *testing.T) {
+	p, ff := newProv(t)
+	data, _ := json.Marshal(&iam_pb.Identity{
+		Name:        "anonymous",
+		Actions:     []string{"Read:other"},
+		Account:     &iam_pb.Account{Id: "anonymous", DisplayName: "anonymous"},
+		PolicyNames: []string{"public-assets"},
+	})
+	ff.files[filer.IamConfigDirectory+"/identities/anonymous.json"] = data
+
+	check := func(step string) {
+		t.Helper()
+		id := &iam_pb.Identity{}
+		if err := json.Unmarshal(ff.files[filer.IamConfigDirectory+"/identities/anonymous.json"], id); err != nil {
+			t.Fatalf("%s: unmarshal anonymous.json: %v", step, err)
+		}
+		if !reflect.DeepEqual(id.PolicyNames, []string{"public-assets"}) || id.Account.GetId() != "anonymous" {
+			t.Errorf("%s: anonymous.json lost fields: policies=%v account=%v", step, id.PolicyNames, id.Account)
+		}
+	}
+
+	if _, err := p.DriverGrantBucketAccess(context.Background(),
+		&cosispec.DriverGrantBucketAccessRequest{BucketId: "b", Name: "u", Parameters: publicRead}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	check("grant")
+	delete(ff.files, filer.IamConfigDirectory+"/"+filer.IamIdentityFile)
+	if _, err := p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{BucketId: "b", AccountId: "anonymous"}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	check("revoke")
 }
