@@ -118,8 +118,10 @@ still cannot list the bucket or write to it.
 
 The `anonymous` identity is shared by every public bucket: deleting the
 BucketAccess removes only this bucket's `Read` action, and other
-buckets stay public. The credentials Secret carries the endpoint and
-region, with empty keys.
+buckets stay public. The grant is not counted per BucketAccess: with
+two `public-read` BucketAccesses on one bucket, deleting either closes
+the bucket, so keep one per bucket. The credentials Secret carries the
+endpoint and region, with empty keys.
 
 ```yaml
 kind: BucketAccessClass
