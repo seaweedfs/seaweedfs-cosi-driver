@@ -891,19 +891,22 @@ func (s *provisionerServer) setAnonymousRead(ctx context.Context, bucket string,
 		}
 	}
 
-	if enable || perIdentity != nil {
-		idJSON, err := json.Marshal(id)
-		if err != nil {
+	// Write the per-identity file after the legacy one, also on a revoke that
+	// read none: a gateway can migrate identity.json between the reads above
+	// and the legacy write, leaving an anonymous.json that still grants
+	// Read:<bucket>. Gateways load it over identity.json and migrate it back
+	// unchanged, so only this write takes the grant away.
+	idJSON, err := json.Marshal(id)
+	if err != nil {
+		return err
+	}
+	if err := s.saveS3Identity(ctx, name+".json", idJSON); err != nil {
+		// On a grant the legacy write already delivers it; on a revoke a
+		// stale per-identity file would keep the bucket public.
+		if !enable {
 			return err
 		}
-		if err := s.saveS3Identity(ctx, name+".json", idJSON); err != nil {
-			// On a grant the legacy write already delivers it; on a revoke a
-			// stale per-identity file would keep the bucket public.
-			if !enable {
-				return err
-			}
-			klog.ErrorS(err, "failed to write per-identity file", "user", name)
-		}
+		klog.ErrorS(err, "failed to write per-identity file", "user", name)
 	}
 	return nil
 }
