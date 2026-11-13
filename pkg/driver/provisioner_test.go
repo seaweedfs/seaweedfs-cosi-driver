@@ -54,6 +54,9 @@ type fakeFiler struct {
 	legacyUpdateNotFound     bool
 	deleteEntryResponseError string
 	lastDeleteEntryRequest   *filer_pb.DeleteEntryRequest
+	// beforeUpdate, when set, runs at the start of every UpdateEntry with the
+	// entry's key, to stage what another writer does in between.
+	beforeUpdate func(key string)
 }
 
 func (f *fakeFiler) fileKey(dir, name string) string { return dir + "/" + name }
@@ -87,6 +90,9 @@ func (f *fakeFiler) CreateEntry(_ context.Context, in *filer_pb.CreateEntryReque
 
 func (f *fakeFiler) UpdateEntry(_ context.Context, in *filer_pb.UpdateEntryRequest) (*filer_pb.UpdateEntryResponse, error) {
 	key := f.fileKey(in.Directory, in.Entry.Name)
+	if f.beforeUpdate != nil {
+		f.beforeUpdate(key)
+	}
 	if _, ok := f.files[key]; !ok {
 		if f.legacyUpdateNotFound {
 			return nil, status.Error(codes.Unknown, "not found "+key+": "+filer_pb.ErrNotFound.Error())
@@ -1690,4 +1696,53 @@ func TestDriverBucketAccessPublicReadKeepsAnonymousFields(t *testing.T) {
 		t.Fatalf("revoke: %v", err)
 	}
 	check("revoke")
+}
+
+// A gateway migrating identity.json while a public-read revoke is in flight
+// writes anonymous.json from the pre-revoke state and moves identity.json
+// aside. The revoke must still end with no Read:<bucket> in anonymous.json,
+// which gateways load over identity.json.
+func TestDriverRevokeBucketAccessPublicReadMigrationRace(t *testing.T) {
+	p, ff := newProv(t)
+	for _, b := range []string{"b", "other"} {
+		if _, err := p.DriverGrantBucketAccess(context.Background(),
+			&cosispec.DriverGrantBucketAccessRequest{BucketId: b, Name: "u-" + b, Parameters: publicRead}); err != nil {
+			t.Fatalf("grant %s: %v", b, err)
+		}
+	}
+	// Back to the layout of a filer that never migrated: the anonymous
+	// identity lives only in identity.json.
+	delete(ff.files, filer.IamConfigDirectory+"/identities/anonymous.json")
+	delete(ff.entries, filer.IamConfigDirectory+"/identities/anonymous.json")
+
+	legacyKey := ff.fileKey(filer.IamConfigDirectory, filer.IamIdentityFile)
+	migrated := false
+	ff.beforeUpdate = func(key string) {
+		if key != legacyKey || migrated {
+			return
+		}
+		migrated = true
+		cfg := &iam_pb.S3ApiConfiguration{}
+		if err := filer.ParseS3ConfigurationFromBytes(ff.files[legacyKey], cfg); err != nil {
+			t.Errorf("parse identity.json: %v", err)
+			return
+		}
+		for _, id := range cfg.Identities {
+			data, _ := json.Marshal(id)
+			ff.files[filer.IamConfigDirectory+"/identities/"+id.Name+".json"] = data
+		}
+		delete(ff.files, legacyKey)
+		delete(ff.entries, legacyKey)
+	}
+
+	if _, err := p.DriverRevokeBucketAccess(context.Background(),
+		&cosispec.DriverRevokeBucketAccessRequest{BucketId: "b", AccountId: "anonymous"}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if !migrated {
+		t.Fatal("the revoke never wrote identity.json, so the migration was not staged")
+	}
+	if got, ok := anonymousFileActions(t, ff); !ok || !reflect.DeepEqual(got, []string{"Read:other"}) {
+		t.Errorf("anonymous.json actions=%v (exists=%v) want [Read:other]", got, ok)
+	}
 }
